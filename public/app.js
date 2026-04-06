@@ -262,11 +262,21 @@ async function loadList() {
     listData = await resp.json();                                // parse the full response
   }
 
-  /* build myRanking — our personal order of movie IDs */
-  if (visitorId && listData.rankings[visitorId]) {              // we have saved rankings
-    myRanking = listData.rankings[visitorId];                   // use them
-  } else {                                                      // no rankings yet
-    myRanking = listData.movies.map(m => m.id);                 // default: order they were added
+  /* build myRanking — our personal order of movie IDs
+     Start from saved rankings if we have them, then append any new movies
+     that were added after we last saved, and remove any that were deleted.
+     This way everyone always has a complete ranking of all movies. */
+  const allMovieIds = listData.movies.map(m => m.id);
+  if (visitorId && listData.rankings[visitorId]) {
+    const saved = listData.rankings[visitorId];
+    /* keep only movies that still exist, in our saved order */
+    myRanking = saved.filter(id => allMovieIds.indexOf(id) !== -1);
+    /* append any new movies not in our ranking */
+    allMovieIds.forEach(id => {
+      if (myRanking.indexOf(id) === -1) myRanking.push(id);
+    });
+  } else {
+    myRanking = allMovieIds.slice();                             // default: order they were added
   }
 
   /* build selectedVisitors — preserve toggles, default new visitors to ON */
@@ -420,6 +430,7 @@ async function addMovie(tmdbMovie) {
   document.getElementById('search-box').value = '';             // clear the search box
   searchResults = [];
   renderSearchResults();                                        // hide the dropdown
+  hideMoviePopup();                                             // dismiss any stuck popup
   await loadList();                                             // refresh to show the new movie
 }
 
@@ -600,32 +611,35 @@ function handleDragMove(currentY) {
   const delta = currentY - dragState.startY;                     // how far the finger has moved
   dragState.entry.style.transform = 'translateY(' + delta + 'px)'; // move the entry visually
 
-  /* check if we've crossed over another entry */
+  /* check if we've crossed over another entry
+     instead of rebuilding the DOM (which breaks pointer capture on mobile),
+     just swap positions in the array — we'll re-render on drop */
   const container = document.getElementById('movie-list');
   const entries = Array.from(container.querySelectorAll('.entry'));
   const dragIndex = myRanking.indexOf(dragState.movieId);        // current position in array
+  if (dragIndex === -1) return;                                  // safety check
 
-  entries.forEach((other, i) => {
-    if (other === dragState.entry) return;                        // skip ourselves
-    const otherRect = other.getBoundingClientRect();
-    const otherMid = otherRect.top + otherRect.height / 2;       // midpoint of the other entry
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i] === dragState.entry) continue;                // skip ourselves
+    const otherRect = entries[i].getBoundingClientRect();
+    const otherMid = otherRect.top + otherRect.height / 2;
 
-    /* if our finger is past the midpoint of another entry, swap them */
-    if (currentY > otherMid && i > dragIndex) {                  // dragging down past this one
-      myRanking.splice(dragIndex, 1);                            // remove from old position
-      myRanking.splice(i, 0, dragState.movieId);                 // insert at new position
-      renderList();                                              // redraw with new order
-      /* re-grab the entry element since renderList rebuilt the DOM */
-      dragState.entry = container.querySelector('[data-movie-id="' + dragState.movieId + '"]');
-      dragState.entry.classList.add('dragging');
-    } else if (currentY < otherMid && i < dragIndex) {           // dragging up past this one
+    if (currentY > otherMid && i > dragIndex) {
+      /* dragging down past this entry — swap in the array */
       myRanking.splice(dragIndex, 1);
       myRanking.splice(i, 0, dragState.movieId);
-      renderList();
-      dragState.entry = container.querySelector('[data-movie-id="' + dragState.movieId + '"]');
-      dragState.entry.classList.add('dragging');
+      /* visually swap the other entry up using CSS transform */
+      entries[i].style.transform = 'translateY(-' + dragState.entryH + 'px)';
+      dragState.startY = currentY;                               // reset so delta stays smooth
+      break;                                                     // only swap one at a time
+    } else if (currentY < otherMid && i < dragIndex) {
+      myRanking.splice(dragIndex, 1);
+      myRanking.splice(i, 0, dragState.movieId);
+      entries[i].style.transform = 'translateY(' + dragState.entryH + 'px)';
+      dragState.startY = currentY;
+      break;
     }
-  });
+  }
 }
 
 async function handleDragEnd() {
@@ -634,6 +648,14 @@ async function handleDragEnd() {
   dragState.entry.classList.remove('dragging');                   // remove lift effect
   dragState.entry.style.transform = '';                          // snap back to position
   dragState = null;                                              // done dragging
+
+  /* safety: deduplicate myRanking in case drag glitches created dupes */
+  const seen = {};
+  myRanking = myRanking.filter(id => {
+    if (seen[id]) return false;
+    seen[id] = true;
+    return true;
+  });
 
   /* save the new ranking to the server */
   await fetch(API + '/list/' + listId + '/rankings', {
@@ -646,7 +668,7 @@ async function handleDragEnd() {
   });
 
   calculateCouchRanking();                                       // our vote changed, recalc
-  if (activeTab === 'couch') renderList();                       // update couch view if showing
+  renderList();                                                  // redraw in final order
 }
 
 
@@ -699,7 +721,8 @@ function expandComment(movieId, commentVisitorId) {
     box.querySelector('.comment-edit').focus();
 
     /* wire up the Done button */
-    box.querySelector('.comment-done-btn').addEventListener('click', () => {
+    box.querySelector('.comment-done-btn').addEventListener('click', (e) => {
+      e.stopPropagation();                                       // don't trigger "click outside"
       const newText = box.querySelector('.comment-edit').value;  // grab edited text
       saveComment(movieId, newText);                              // save to server
       collapseComment();                                         // shrink back
@@ -1286,17 +1309,8 @@ function setupEventListeners() {
     if (movie) addMovie(movie);
   });
 
-  /* --- SEARCH RESULTS: hover/long-press shows movie popup --- */
-  document.getElementById('search-results').addEventListener('mouseenter', e => {
-    const resultEl = e.target.closest('.search-result');
-    if (!resultEl) return;
-    showMoviePopup(parseInt(resultEl.dataset.tmdbId), resultEl);
-  }, true);                                                      // true = capture phase (for delegation)
-
-  document.getElementById('search-results').addEventListener('mouseleave', e => {
-    const resultEl = e.target.closest('.search-result');
-    if (resultEl) hideMoviePopup();
-  }, true);
+  /* --- SEARCH RESULTS: no hover popup here — it conflicts with clicking
+     to add movies. Popups only show on the movie list items below. --- */
 
   /* --- TAB BAR: click and long-press on tabs --- */
   let longPressTimer = null;                                     // for detecting long-press
@@ -1360,25 +1374,33 @@ function setupEventListeners() {
 
   /* click on poster or title → open TMDB in new tab */
   movieList.addEventListener('click', e => {
+    /* hide popup on any click in the movie list */
+    hideMoviePopup();
+
     const el = e.target.closest('.entry-poster, .entry-title');
     if (el) {
       const tmdbId = el.dataset.tmdbId;
       window.open('https://www.themoviedb.org/movie/' + tmdbId, '_blank');
-    }
-
-    /* click on comment box → expand it */
-    const commentBox = e.target.closest('.comment-box');
-    if (commentBox && !expandedComment) {                        // only if nothing already expanded
-      expandComment(
-        parseInt(commentBox.dataset.movieId),
-        commentBox.dataset.visitorId
-      );
+      return;                                                    // don't also trigger comment/remove
     }
 
     /* click on remove button → remove the movie */
     const removeBtn = e.target.closest('.remove-btn');
     if (removeBtn) {
       removeMovie(parseInt(removeBtn.dataset.movieId));
+      return;
+    }
+
+    /* click on comment box → expand it
+       uses stopPropagation so the document "click outside" handler
+       doesn't immediately collapse what we just expanded */
+    const commentBox = e.target.closest('.comment-box');
+    if (commentBox && !expandedComment) {                        // only if nothing already expanded
+      e.stopPropagation();                                       // prevent instant collapse
+      expandComment(
+        parseInt(commentBox.dataset.movieId),
+        commentBox.dataset.visitorId
+      );
     }
   });
 
@@ -1393,25 +1415,32 @@ function setupEventListeners() {
     if (el) hideMoviePopup();
   }, true);
 
-  /* drag to reorder — pointer events work for both mouse and touch */
+  /* drag to reorder — pointer events work for both mouse and touch
+     setPointerCapture ensures we keep getting events on mobile even when
+     the finger moves off the original element */
   movieList.addEventListener('pointerdown', e => {
     const handle = e.target.closest('.drag-handle');              // only start drag from the handle
     if (!handle) return;
     const entry = handle.closest('.entry');
     if (!entry) return;
     e.preventDefault();                                          // prevent text selection
+    handle.setPointerCapture(e.pointerId);                       // capture pointer for mobile
     handleDragStart(entry, e.clientY);
   });
 
-  document.addEventListener('pointermove', e => {
+  movieList.addEventListener('pointermove', e => {
     if (dragState) {
       e.preventDefault();
       handleDragMove(e.clientY);
     }
   });
 
-  document.addEventListener('pointerup', () => {
+  movieList.addEventListener('pointerup', e => {
     if (dragState) handleDragEnd();
+  });
+
+  movieList.addEventListener('pointercancel', e => {
+    if (dragState) handleDragEnd();                              // clean up if browser cancels touch
   });
 
   /* click outside expanded comment → collapse it */

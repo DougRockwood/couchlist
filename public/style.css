@@ -1,0 +1,628 @@
+/* ============================================================================
+   style.css — whatdoyouwannawatch.com
+   ============================================================================
+   All visual styling for the app. Mobile-first — the base styles target a
+   phone in portrait orientation (~375px wide). Desktop overrides are at the
+   bottom in a @media block.
+
+   No frameworks, no preprocessors, no CSS-in-JS. Just plain CSS.
+
+   The HTML is minimal (index.html is just named containers). app.js builds
+   all the inner HTML dynamically. So every class name referenced here is
+   created by app.js, not written in index.html.
+
+   LAYOUT (top to bottom on a phone):
+     #app              — full-width container, centered on desktop
+     #search-area      — sticky at top so you can always add movies
+     #search-box       — text input, full width
+     #search-results   — dropdown overlay below the search box
+     #tab-bar          — horizontal scroll of visitor tabs
+     #movie-list       — main scrolling area, fills remaining height
+     .entry            — one movie row: rank | poster | title | comments | remove
+     #copy-paste-btn   — fixed bottom-left button
+     #copy-paste-modal — fullscreen overlay
+     #movie-popup      — floating info card
+   ============================================================================ */
+
+
+/* ============================================================================
+   SECTION 1: RESET AND BASE
+   ============================================================================
+   Kill default margins/padding. Set a clean base font. Use border-box so
+   padding doesn't add to element widths (critical for mobile layouts).
+   ============================================================================ */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.4;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+
+/* ============================================================================
+   SECTION 2: APP CONTAINER
+   ============================================================================
+   On phones: full width, no padding needed (entries go edge to edge).
+   On desktop: max-width of 600px, centered. A movie list doesn't need to
+   be wider than that — it just looks silly stretched across a big monitor.
+   ============================================================================ */
+
+#app {
+  max-width: 600px;
+  margin: 0 auto;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+
+/* ============================================================================
+   SECTION 3: SEARCH AREA
+   ============================================================================
+   Sticky at the top of the page so the user can always search without
+   scrolling back up. The search box is a simple text input. The results
+   dropdown appears below it as an absolute-positioned overlay so it
+   doesn't push the list down.
+   ============================================================================ */
+
+#search-area {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: #1a1a2e;
+  padding: 12px 12px 0;
+}
+
+#search-box {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 16px;
+  border: 1px solid #444;
+  border-radius: 8px;
+  background: #16213e;
+  color: #e0e0e0;
+  outline: none;
+}
+
+#search-box:focus {
+  border-color: #e94560;
+}
+
+#search-box::placeholder {
+  color: #777;
+}
+
+/* --- Search Results Dropdown ---
+   Positioned absolutely so it overlays the list below without pushing
+   content down. Each result row has a tiny poster thumbnail + title.
+   ============================================================================ */
+
+#search-results {
+  position: absolute;
+  top: 100%;
+  left: 12px;
+  right: 12px;
+  background: #16213e;
+  border: 1px solid #444;
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  z-index: 101;
+  display: none;
+}
+
+.search-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.search-result:last-child {
+  border-bottom: none;
+}
+
+.search-result:hover {
+  background: #2a2a4a;
+}
+
+.search-thumb {
+  width: 30px;
+  height: 45px;
+  object-fit: cover;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+
+/* ============================================================================
+   SECTION 4: TAB BAR
+   ============================================================================
+   A horizontal row of tabs that scrolls sideways if there are too many
+   visitors to fit. Each tab shows a visitor's name + a small color swatch.
+   The active tab is highlighted. Dimmed tabs (toggled out of the Couch vote)
+   are faded.
+
+   On the far right: either a name input field (if the visitor hasn't
+   entered a name yet) or a hidden color picker.
+   ============================================================================ */
+
+#tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  white-space: nowrap;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* hide the scrollbar on the tab bar — it's ugly, users swipe instead */
+#tab-bar::-webkit-scrollbar {
+  display: none;
+}
+#tab-bar {
+  scrollbar-width: none;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 16px;
+  background: #2a2a4a;
+  color: #ccc;
+  font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.tab-active {
+  background: #e94560;
+  color: #fff;
+}
+
+.tab-dimmed {
+  opacity: 0.35;
+}
+
+.color-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.3);
+}
+
+/* --- Name Entry (shown in tab bar when visitor has no name yet) --- */
+
+.name-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+#name-input {
+  padding: 6px 10px;
+  font-size: 14px;
+  border: 1px solid #444;
+  border-radius: 16px;
+  background: #16213e;
+  color: #e0e0e0;
+  width: 140px;
+  outline: none;
+}
+
+#name-input:focus {
+  border-color: #e94560;
+}
+
+#name-warning {
+  color: #e94560;
+  font-size: 12px;
+}
+
+
+/* ============================================================================
+   SECTION 5: MOVIE LIST AND ENTRIES
+   ============================================================================
+   The main content area. Each .entry is one movie row.
+
+   Entry layout (left to right):
+     .entry-rank     — rank number + optional drag handle + optional tie label
+     .entry-poster   — small poster image (92px wide from TMDB)
+     .entry-title    — movie title + year
+     .entry-comments — horizontal row of comment boxes
+     .remove-btn     — small X button (only if you added this movie)
+
+   On a phone, the entry wraps: poster + title on the first line, comments
+   below. The rank number is always on the left.
+   ============================================================================ */
+
+#movie-list {
+  flex: 1;
+  padding: 0 4px;
+}
+
+.entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid #2a2a4a;
+  position: relative;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+
+/* --- Rank number column --- */
+
+.entry-rank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 32px;
+  flex-shrink: 0;
+}
+
+.rank-number {
+  font-size: 20px;
+  font-weight: bold;
+  color: #e94560;
+}
+
+.drag-handle {
+  font-size: 14px;
+  color: #666;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.tie-label {
+  font-size: 9px;
+  color: #888;
+  white-space: nowrap;
+}
+
+/* --- Poster thumbnail --- */
+
+.entry-poster {
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.entry-poster img {
+  width: 46px;
+  height: 69px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.no-poster {
+  width: 46px;
+  height: 69px;
+  background: #2a2a4a;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  font-size: 20px;
+}
+
+/* --- Title --- */
+
+.entry-title {
+  flex: 1;
+  font-size: 14px;
+  padding-top: 4px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+/* --- Comment boxes --- */
+
+.entry-comments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 2;
+  min-width: 0;
+}
+
+.comment-box {
+  font-size: 12px;
+  padding: 4px 6px;
+  background: #16213e;
+  border-radius: 6px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid #2a2a4a;
+}
+
+.comment-empty {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+/* --- Comment expanded state ---
+   When you tap a comment, it grows to ~2/3 screen height.
+   If it's yours, a textarea + Done button appear inside.
+   If it's someone else's, it becomes scrollable read-only.
+   ============================================================================ */
+
+.comment-expanded {
+  position: fixed;
+  left: 5%;
+  right: 5%;
+  top: 15%;
+  max-width: none;
+  width: 90%;
+  height: 50vh;
+  max-height: 50vh;
+  white-space: normal;
+  overflow-y: auto;
+  z-index: 200;
+  background: #16213e;
+  border: 2px solid #e94560;
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.comment-edit {
+  flex: 1;
+  width: 100%;
+  font-size: 14px;
+  padding: 8px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  resize: none;
+  margin-top: 8px;
+  font-family: inherit;
+}
+
+.comment-done-btn {
+  align-self: flex-end;
+  margin-top: 8px;
+  padding: 8px 20px;
+  background: #e94560;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.comment-readonly {
+  white-space: normal;
+  overflow-y: auto;
+}
+
+/* --- Remove button --- */
+
+.remove-btn {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px;
+  flex-shrink: 0;
+}
+
+.remove-btn:hover {
+  color: #e94560;
+}
+
+/* --- Dragging state ---
+   When an entry is being dragged, it lifts up with a shadow and goes
+   slightly transparent so you can see what's underneath.
+   ============================================================================ */
+
+.dragging {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  opacity: 0.9;
+  z-index: 50;
+  background: #1a1a2e;
+}
+
+
+/* ============================================================================
+   SECTION 6: COPY / PASTE BUTTON AND MODAL
+   ============================================================================
+   The button is fixed to the bottom-left corner, always visible.
+   The modal is a fullscreen overlay with sections for ID management,
+   export, and import.
+   ============================================================================ */
+
+#copy-paste-btn {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  padding: 8px 16px;
+  background: #2a2a4a;
+  color: #ccc;
+  border: 1px solid #444;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  z-index: 90;
+}
+
+#copy-paste-btn:hover {
+  background: #3a3a5a;
+}
+
+#copy-paste-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  z-index: 300;
+  justify-content: center;
+  align-items: flex-start;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.modal-content {
+  background: #16213e;
+  border-radius: 12px;
+  padding: 20px;
+  max-width: 500px;
+  width: 100%;
+  position: relative;
+}
+
+.modal-close {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  background: none;
+  border: none;
+  color: #999;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.modal-section {
+  margin-bottom: 20px;
+}
+
+.modal-section h3 {
+  font-size: 14px;
+  color: #e94560;
+  margin-bottom: 8px;
+}
+
+.modal-section input[type="text"],
+.modal-section textarea {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-family: inherit;
+}
+
+.modal-section textarea {
+  min-height: 80px;
+  resize: vertical;
+}
+
+.modal-section button {
+  margin-top: 6px;
+  padding: 6px 14px;
+  background: #e94560;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.modal-hint {
+  font-size: 11px;
+  color: #777;
+  margin-top: 4px;
+}
+
+
+/* ============================================================================
+   SECTION 7: MOVIE INFO POPUP
+   ============================================================================
+   Floating card that appears on hover (desktop) or long-press (phone).
+   Shows the large poster, director, cast, and plot summary from TMDB.
+   Positioned absolutely by app.js near the element that triggered it.
+   ============================================================================ */
+
+#movie-popup {
+  display: none;
+  position: absolute;
+  z-index: 250;
+  background: #16213e;
+  border: 1px solid #444;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+  max-width: 400px;
+  overflow: hidden;
+}
+
+.popup-content {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+}
+
+.popup-poster {
+  width: 120px;
+  height: auto;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.popup-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.popup-info h3 {
+  font-size: 15px;
+  margin-bottom: 6px;
+  color: #fff;
+}
+
+.popup-info p {
+  font-size: 12px;
+  color: #bbb;
+  margin-bottom: 6px;
+}
+
+
+/* ============================================================================
+   SECTION 8: DESKTOP OVERRIDES
+   ============================================================================
+   On screens wider than 700px, give the app a bit of breathing room.
+   The layout doesn't change much — the max-width on #app already handles
+   centering. These are just small tweaks for mouse-based interaction.
+   ============================================================================ */
+
+@media (min-width: 700px) {
+  #app {
+    padding: 20px 0;
+  }
+
+  .entry {
+    padding: 10px 12px;
+  }
+
+  .comment-box {
+    max-width: 260px;
+  }
+}

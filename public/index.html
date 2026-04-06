@@ -1,0 +1,153 @@
+<!-- =========================================================================
+     index.html — whatdoyouwannawatch.com
+     =========================================================================
+     This is the only HTML page. It's the skeleton — no logic lives here.
+     app.js handles ALL behavior. style.css handles ALL appearance.
+
+     The page is just a stack of named containers that app.js fills in:
+       1. search-box         — text input for TMDB movie search
+       2. search-results     — dropdown that appears below the search box
+       3. tab-bar            — visitor tabs + the Couch tab
+       4. movie-list         — the main list of movie entries
+       5. copy-paste-btn     — bottom button to open the Copy/Paste modal
+       6. copy-paste-modal   — fullscreen overlay for export/import/ID management
+       7. movie-popup        — floating overlay for movie detail on hover/long-press
+
+     Everything inside these containers is built dynamically by app.js.
+     This file just provides the empty boxes and loads the scripts/styles.
+
+     The page uses NO frameworks — just plain HTML served as a static file
+     by Express. The <script> tag at the bottom loads app.js, which calls
+     initApp() immediately on load.
+     ========================================================================= -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- ==================================================================
+       HEAD — metadata, viewport, stylesheet
+       ==================================================================
+       The viewport meta tag is critical for mobile. Without it, phones
+       render the page at ~980px wide and shrink it down, making everything
+       tiny. With it, the page renders at the phone's actual width.
+
+       We load style.css here so the page doesn't flash unstyled content.
+       We load app.js at the bottom of <body> so the DOM exists before
+       the script runs (no need for DOMContentLoaded listener).
+       ================================================================== -->
+
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>What Do You Wanna Watch?</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ==================================================================
+       MAIN CONTAINER — centers content, sets max width
+       ==================================================================
+       Everything lives inside this div. On phones it fills the screen.
+       On desktop it maxes out at ~600px and centers, because a movie
+       list doesn't need to be wide.
+       ================================================================== -->
+
+  <div id="app">
+
+    <!-- ================================================================
+         SEARCH AREA — search box + dropdown results
+         ================================================================
+         The input fires on every keystroke (debounced in app.js).
+         search-results starts hidden. When TMDB returns matches,
+         app.js fills it with clickable rows and shows it. Clicking a
+         row calls addMovie() and hides the dropdown.
+         ================================================================ -->
+
+    <div id="search-area">
+      <input type="text" id="search-box" placeholder="Add a movie..." autocomplete="off">
+      <div id="search-results"></div>
+    </div>
+
+    <!-- ================================================================
+         TAB BAR — Couch tab + visitor tabs + name input
+         ================================================================
+         app.js rebuilds this entirely via renderUserTabs().
+         Contents depend on state:
+           - Always: Couch tab
+           - Per visitor on this list: a tab with their name + color swatch
+           - If current visitor has no name yet: a name input field
+           - If current visitor has a name: a hidden color picker input
+
+         Click a tab → handleTabClick() switches the list ordering.
+         Long-press a tab → handleTabLongPress() toggles them in/out
+         of the Couch vote.
+         ================================================================ -->
+
+    <div id="tab-bar"></div>
+
+    <!-- ================================================================
+         MOVIE LIST — the main content area
+         ================================================================
+         app.js rebuilds this entirely via renderList().
+         Each entry is a div.entry with:
+           - rank number + optional drag handle
+           - poster thumbnail
+           - title + year
+           - comment boxes
+           - optional remove button
+
+         The ordering depends on activeTab:
+           "couch"    → Borda consensus order
+           visitorId  → that person's personal ranking
+         ================================================================ -->
+
+    <div id="movie-list"></div>
+
+    <!-- ================================================================
+         COPY/PASTE BUTTON — bottom of the screen
+         ================================================================
+         Always visible. Clicking opens the Copy/Paste modal.
+         ================================================================ -->
+
+    <button id="copy-paste-btn">Copy / Paste</button>
+
+  </div>
+
+  <!-- ==================================================================
+       COPY/PASTE MODAL — fullscreen overlay
+       ==================================================================
+       Starts hidden (display:none). app.js fills innerHTML and shows it
+       when the user clicks the Copy/Paste button. Contains:
+         - Your Visitor ID (copyable)
+         - Restore Visitor ID (paste to recover)
+         - List ID (for reference)
+         - Export (full list as text)
+         - Import (paste text to bulk-add movies)
+       ================================================================== -->
+
+  <div id="copy-paste-modal"></div>
+
+  <!-- ==================================================================
+       MOVIE POPUP — floating detail overlay
+       ==================================================================
+       Starts hidden. app.js positions it near the hovered/long-pressed
+       poster or title and fills it with TMDB detail data:
+         - Large poster image
+         - Director name
+         - Top 5 cast members
+         - Plot summary
+       ================================================================== -->
+
+  <div id="movie-popup"></div>
+
+  <!-- ==================================================================
+       SCRIPT — loads all frontend logic
+       ==================================================================
+       Placed at the bottom so the DOM is fully parsed before app.js runs.
+       app.js calls initApp() at the very end of the file, which reads
+       the URL, checks the cookie, fetches data, and renders everything.
+       ================================================================== -->
+
+  <script src="app.js"></script>
+
+</body>
+</html>

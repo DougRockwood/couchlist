@@ -1,0 +1,13 @@
+{
+  "name": "whattowatch",
+  "version": "1.0.0",
+  "description": "What do you wanna watch? — shared movie list with ranked-choice voting",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "better-sqlite3": "^11.7.0"
+  }
+}

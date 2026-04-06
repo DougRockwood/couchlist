@@ -41,7 +41,7 @@
    LONG_PRESS_MS       — 500, milliseconds to hold before it counts as long-press
    ============================================================================ */
 
-const TMDB_API_KEY  = 'YOUR_TMDB_API_KEY_HERE';                // replace when deploying
+const TMDB_API_KEY  = '50f0ec96e69aa677d94e2977722686b4';       // TMDB API key (free tier)
 const TMDB_BASE     = 'https://api.themoviedb.org/3';          // TMDB API root
 const TMDB_IMG      = 'https://image.tmdb.org/t/p/';           // TMDB image root
 const API           = '/api';                                   // our server root
@@ -785,6 +785,19 @@ function renderUserTabs() {
       + ' <span class="color-swatch" style="background:' + escapeHtml(v.color) + '"></span>'
       + '</div>';
   });
+
+  /* show our own tab if we have a name but aren't in the list's visitors yet
+     (happens when we've entered a name but haven't added/ranked/commented) */
+  if (visitor && !listData.visitors.find(v => v.id === visitorId)) {
+    const isActive = (activeTab === visitorId);
+    const isSelected = selectedVisitors[visitorId] !== false;
+    html += '<div class="tab' + (isActive ? ' tab-active' : '')
+      + (isSelected ? '' : ' tab-dimmed') + '" '
+      + 'data-tab="' + visitorId + '">'
+      + escapeHtml(displayNames[visitorId] || visitor.name)
+      + ' <span class="color-swatch" style="background:' + escapeHtml(visitor.color) + '"></span>'
+      + '</div>';
+  }
 
   /* name input — only show if this visitor hasn't entered a name */
   if (!visitor) {

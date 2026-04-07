@@ -1,0 +1,154 @@
+==============================================================================
+BUGFIX LOG — whatdoyouwannawatch.com
+==============================================================================
+Bugs found during first live testing on the DigitalOcean droplet,
+2026-04-05. Tested on Windows Chrome (desktop) and phone browser.
+
+
+==============================================================================
+BUG 1: TMDB search returns no results (2026-04-05)
+==============================================================================
+Symptom:  Typing a movie name in the search box did nothing. No dropdown,
+          no suggestions, no error visible to the user. 13 errors in the
+          browser console.
+Cause:    The TMDB API key was still the placeholder string
+          "YOUR_TMDB_API_KEY_HERE". All TMDB fetch calls failed silently
+          (the error was caught by the async function but not shown to
+          the user).
+Fix:      Replaced the placeholder with the real API key in app.js line 44.
+File:     public/app.js (Section 1: Constants)
+
+
+==============================================================================
+BUG 2: Name tab disappears after entering your name (2026-04-05)
+==============================================================================
+Symptom:  User types a name, hits enter. The name input disappears (correct)
+          but their tab also doesn't appear — only "Couch" is shown.
+Cause:    After entering a name, handleNameEntry() calls loadList().
+          The list doesn't exist yet (no movies added), so the server
+          returns 404. listData gets empty arrays. renderUserTabs() builds
+          tabs from listData.visitors (empty), so no visitor tab appears.
+          The name input is gone because visitor is now set. Dead end.
+Fix:      Added a block in renderUserTabs() that checks if our visitor has
+          a name but isn't in listData.visitors yet. If so, we manually
+          add our own tab to the tab bar.
+File:     public/app.js (Section 10: renderUserTabs)
+
+
+==============================================================================
+BUG 3: Double URL-decode on check-name endpoint (2026-04-05, code review)
+==============================================================================
+Symptom:  Not triggered by a user — found during code review. Would crash
+          the server with a URIError if anyone had a "%" in their name.
+Cause:    server.js called decodeURIComponent(req.params.name), but Express
+          already decodes URL parameters automatically. A name containing
+          "%" would get double-decoded: "Doug%" → Express decodes to
+          "Doug%" → decodeURIComponent("Doug%") → URIError (invalid
+          percent-encoding).
+Fix:      Removed the decodeURIComponent() call. Express handles it.
+File:     server.js (Section 6: check-name endpoint)
+
+
+==============================================================================
+BUG 4: Entry layout overflow on narrow phones (2026-04-05, code review)
+==============================================================================
+Symptom:  Not triggered by a user — found during code review. On very
+          narrow phone screens, movie entries (rank + poster + title +
+          comments + remove) would overflow horizontally.
+Cause:    .entry used display:flex but without flex-wrap. All elements
+          were forced into one row regardless of screen width.
+Fix:      Added flex-wrap: wrap to .entry so comments can flow to a
+          second line on narrow screens.
+File:     public/style.css (Section 5: .entry)
+
+
+==============================================================================
+BUG 5: Movie popup gets stuck on screen (2026-04-05)
+==============================================================================
+Symptom:  After adding a movie from search results, the TMDB detail popup
+          (large poster, director, cast) stays visible and won't dismiss.
+          Blocks interaction with the list underneath.
+Cause:    Two problems:
+          1. Search results had a mouseenter handler that showed the popup
+             when hovering over a result. This conflicted with clicking —
+             the popup would appear and then persist because addMovie()
+             cleared the search results (removing the mouseleave target),
+             so the "hide on mouseleave" never fired.
+          2. No general click-to-dismiss on the popup.
+Fix:      1. Removed the hover-popup on search results entirely. Popups
+             now only appear on movie list items (where hover makes sense).
+          2. Added hideMoviePopup() call inside addMovie().
+          3. Added hideMoviePopup() at the top of the movie list click
+             handler so clicking anywhere in the list dismisses it.
+File:     public/app.js (Sections 6, 16: addMovie, setupEventListeners)
+
+
+==============================================================================
+BUG 6: Comment box expands then instantly collapses (2026-04-05)
+==============================================================================
+Symptom:  Clicking a comment box causes it to flash open for a split second
+          then immediately collapse. Occasionally it would stay open if
+          clicked rapidly, making it seem random and glitchy.
+Cause:    expandComment() replaces the comment box's innerHTML with a
+          textarea + Done button. This detaches the original click target
+          from the DOM. The same click event then bubbles to the document-
+          level "click outside expanded comment" handler. That handler
+          checks e.target.closest('.comment-expanded') — but since the
+          original click target is now detached from the DOM, closest()
+          returns null. The handler thinks we clicked "outside" and
+          immediately calls collapseComment().
+Fix:      Added e.stopPropagation() in the comment box click handler to
+          prevent the event from reaching the document-level handler.
+          Also added e.stopPropagation() on the Done button click.
+File:     public/app.js (Sections 9, 16: expandComment, setupEventListeners)
+
+
+==============================================================================
+BUG 7: Visitor tab shows only some movies (2026-04-05)
+==============================================================================
+Symptom:  Doug adds 4 movies. The Couch tab shows all 4, but Doug's tab
+          only shows the first 2. New movies added after the first drag
+          are missing from the visitor's tab.
+Cause:    Rankings are saved to the server only when you drag-reorder.
+          If Doug had 2 movies and dragged (saving [movie1, movie2]),
+          then added 2 more, the server still has the old ranking with
+          only 2 movies. On next loadList(), myRanking is loaded from
+          the server's saved ranking — only 2 movies. renderList() uses
+          listData.rankings[activeTab] for other visitors' tabs, which
+          also has only the saved movies.
+Fix:      In loadList(), after loading saved rankings, filter out deleted
+          movies and append any new movies not in the ranking. This
+          ensures every visitor always has a complete ranking. The rule
+          is: every movie always has a rank — new movies go to the bottom.
+File:     public/app.js (Section 5: loadList)
+
+
+==============================================================================
+BUG 8: Drag reorder broken on phone, causes duplicates (2026-04-05)
+==============================================================================
+Symptom:  On phone, dragging a movie entry was very hard to initiate.
+          When grabbed, the entry would flutter and not land where dropped.
+          After reloading, "The Thing" appeared 6 times in the list.
+Cause:    Three problems:
+          1. No setPointerCapture — on mobile, once the finger moves off
+             the original element, pointermove events stop firing. The
+             drag loses track of the finger.
+          2. renderList() was called during every drag swap, rebuilding
+             the entire DOM. This destroyed pointer capture and caused
+             the flutter effect.
+          3. With broken drags ending in random states, corrupted
+             myRanking arrays (with duplicate entries) were saved to
+             the server via handleDragEnd().
+Fix:      1. Added handle.setPointerCapture(e.pointerId) in the
+             pointerdown handler to keep events flowing on mobile.
+          2. Replaced DOM rebuild during drag with CSS transform swaps.
+             Other entries slide up/down visually, but the DOM isn't
+             rebuilt until handleDragEnd(). This keeps pointer capture
+             intact.
+          3. Added deduplication filter in handleDragEnd() before saving
+             to server — removes duplicate movie IDs from myRanking.
+          4. Added pointercancel handler to clean up if the browser
+             cancels the touch (e.g., incoming call, gesture conflict).
+          5. Moved pointermove and pointerup listeners from document to
+             movieList element (works with setPointerCapture).
+File:     public/app.js (Section 8: drag handlers, Section 16: event setup)

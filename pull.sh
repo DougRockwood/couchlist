@@ -10,7 +10,7 @@ git pull origin main
 echo ""
 echo "=== Pulling WhatToWatch ==="
 cd /opt/WhatToWatch
-git pull origin hail-mary
+git pull origin main
 
 echo ""
 echo "All synced."

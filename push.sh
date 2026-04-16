@@ -24,7 +24,7 @@ if [ -n "$(git status --porcelain)" ]; then
     read -p "Commit message (Enter for datestamp): " msg
     msg="${msg:-sync $(date +%Y-%m-%d)}"
     git commit -m "$msg"
-    git push origin hail-mary
+    git push origin main
     echo "WhatToWatch pushed."
 else
     echo "No WhatToWatch changes to push."

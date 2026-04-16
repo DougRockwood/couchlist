@@ -1,49 +1,35 @@
 /* ============================================================================
-   server.js — whatdoyouwannawatch.com
+   server.js — whatdoyouwannawatch.com (flat-redesign)
    ============================================================================
-   This is the entire backend. It does three things:
+   The entire backend. Three jobs:
 
-   1. Serves the static files (index.html, style.css, app.js) from public/
-   2. Provides a JSON API that app.js calls via fetch()
-   3. Stores everything in a SQLite database file (whattowatch.db)
+   1. Serve static files (index.html, style.css, app.js) from public/
+   2. Provide a JSON API that app.js calls via fetch()
+   3. Store everything in a SQLite database file (whattowatch.db)
 
-   The API never talks to TMDB — that happens directly from the browser.
-   This server only handles our own data: visitors, lists, movies, rankings,
-   and comments.
+   KEY DIFFERENCE FROM v1:
+   Rankings and comments are NO LONGER separate tables. They live directly
+   on the movies table as user1_rank, user1_comment, user2_rank, etc.
+   Each list supports up to 10 visitors. A "list_visitors" table maps
+   slot numbers (1-10) to visitor IDs on a per-list basis.
 
-   DEPENDENCIES (listed in package.json):
-     express         — web framework, handles routing and static files
-     better-sqlite3  — SQLite driver, synchronous API (no callbacks/promises
-                       needed for DB calls — simpler code)
+   This means every movie row contains ALL the data the frontend needs —
+   no cross-referencing, no reshaping. The response from GET /api/list/:id
+   is essentially what you see on screen.
+
+   DEPENDENCIES (package.json):
+     express         — web framework
+     better-sqlite3  — synchronous SQLite driver
 
    HOW TO RUN:
-     npm install          — downloads dependencies into node_modules/
-     node server.js       — starts the server on port 3000
-     open localhost:3000   — browser loads index.html, app.js takes over
-
-   DATABASE:
-     SQLite stores everything in a single file: whattowatch.db
-     The file is auto-created on first run. Tables are auto-created too.
-     No database server to install, no configuration, no connection strings.
-     To reset everything: just delete whattowatch.db and restart.
+     npm install
+     node server.js
+     open localhost:3000
    ============================================================================ */
 
 
 /* ============================================================================
    SECTION 1: IMPORTS AND SETUP
-   ============================================================================
-   Load Express and better-sqlite3, create the app, open the database.
-
-   Express is the web framework — it handles HTTP requests and responses.
-   better-sqlite3 is synchronous, which means we can write:
-     const row = db.prepare('SELECT ...').get(id);
-   instead of:
-     db.query('SELECT ...', [id], (err, rows) => { ... });
-   Much simpler to read and reason about.
-
-   The database file lives next to server.js (not in public/ — we don't
-   want browsers to download it). If it doesn't exist, better-sqlite3
-   creates it automatically.
    ============================================================================ */
 
 const express = require('express');
@@ -54,35 +40,34 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const db = new Database(path.join(__dirname, 'whattowatch.db'));
-db.pragma('journal_mode = WAL');
+db.pragma('journal_mode = WAL');                                   // better concurrency
 
 
 /* ============================================================================
    SECTION 2: DATABASE SCHEMA
    ============================================================================
-   Create tables if they don't already exist. This runs every time the
-   server starts, but "IF NOT EXISTS" means it's a no-op after the first run.
+   Three tables (down from five in v1):
 
-   Five tables (matching the schema in Outline.txt):
+   visitors       — global registry of people. One row per person, shared
+                    across all lists. The 10-char ID comes from the cookie.
 
-   visitors  — one row per person, shared across all lists
-               id is the 10-char visitor ID from the cookie
-               name + color are set when the visitor enters their name
+   lists          — one row per list. Created when the first movie is added.
 
-   lists     — one row per list, created when the first movie is added
-               id is the 8-char code from the URL
+   list_visitors  — maps slot numbers (1-10) to visitor IDs, per list.
+                    When doug joins list "abc123", he gets slot 1.
+                    When percy joins, he gets slot 2. Up to 10 per list.
+                    The slot number determines which columns hold their data
+                    in the movies table (user1_rank, user2_rank, etc).
 
-   movies    — one row per movie on a list
-               id is auto-incrementing (SQLite handles this)
-               tmdb_id is TMDB's ID for fetching poster/details from browser
-               title/year/poster are cached so the list loads without TMDB calls
+   movies         — one row per movie on a list. Contains ALL data:
+                    - movie info (title, year, poster, tmdb_id)
+                    - who added it (added_by)
+                    - every visitor's rank (user1_rank through user10_rank)
+                    - every visitor's comment (user1_comment through user10_comment)
 
-   rankings  — one row per movie per visitor per list
-               position is 1-based (1 = top pick)
-               when a visitor reorders, we DELETE all their rows and re-INSERT
-
-   comments  — one row per visitor per movie per list
-               UNIQUE constraint means PUT = INSERT OR REPLACE (upsert)
+                    If user3_rank is NULL, it means slot 3 has no visitor
+                    assigned yet. If it's a number, that's their ranking
+                    for this movie (1 = their top pick).
    ============================================================================ */
 
 db.exec(`
@@ -97,65 +82,49 @@ db.exec(`
     created TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS list_visitors (
+    list_id    TEXT,
+    slot       INTEGER CHECK(slot BETWEEN 1 AND 10),
+    visitor_id TEXT,
+    PRIMARY KEY(list_id, slot),
+    UNIQUE(list_id, visitor_id)
+  );
+
   CREATE TABLE IF NOT EXISTS movies (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    list_id  TEXT,
-    tmdb_id  INTEGER,
-    title    TEXT,
-    year     INTEGER,
-    poster   TEXT,
-    added_by TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS rankings (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
     list_id    TEXT,
-    visitor_id TEXT,
-    movie_id   INTEGER,
-    position   INTEGER
-  );
-
-  CREATE TABLE IF NOT EXISTS comments (
-    list_id    TEXT,
-    movie_id   INTEGER,
-    visitor_id TEXT,
-    text       TEXT,
-    UNIQUE(list_id, movie_id, visitor_id)
+    tmdb_id    INTEGER,
+    title      TEXT,
+    year       INTEGER,
+    poster     TEXT,
+    added_by   TEXT,
+    user1_rank  INTEGER, user1_comment  TEXT,
+    user2_rank  INTEGER, user2_comment  TEXT,
+    user3_rank  INTEGER, user3_comment  TEXT,
+    user4_rank  INTEGER, user4_comment  TEXT,
+    user5_rank  INTEGER, user5_comment  TEXT,
+    user6_rank  INTEGER, user6_comment  TEXT,
+    user7_rank  INTEGER, user7_comment  TEXT,
+    user8_rank  INTEGER, user8_comment  TEXT,
+    user9_rank  INTEGER, user9_comment  TEXT,
+    user10_rank INTEGER, user10_comment TEXT
   );
 `);
 
 
 /* ============================================================================
    SECTION 3: MIDDLEWARE
-   ============================================================================
-   Express middleware runs on every request before the route handler.
-
-   express.json()       — parses JSON request bodies (POST/PUT with
-                           Content-Type: application/json) so we can
-                           read req.body as a JavaScript object
-
-   express.static()     — serves files from public/ directory.
-                           GET /style.css → sends public/style.css
-                           GET /app.js → sends public/app.js
-                           GET / → sends public/index.html (default)
    ============================================================================ */
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), { etag: false, maxAge: 0 }));
 
 
 /* ============================================================================
    SECTION 4: VISITOR ENDPOINTS
    ============================================================================
    GET  /api/visitor/:id   — look up a visitor by their 10-char ID
-                              returns { id, name, color } or 404
-
-   PUT  /api/visitor/:id   — create or update a visitor
-                              body: { name, color }
-                              returns { id, name, color }
-
-   The PUT uses INSERT OR REPLACE — if the visitor ID exists, the row is
-   replaced. If it doesn't exist, a new row is created. Either way, we
-   return the current state of the visitor.
+   PUT  /api/visitor/:id   — create or update a visitor (name, color)
    ============================================================================ */
 
 app.get('/api/visitor/:id', (req, res) => {
@@ -173,25 +142,21 @@ app.put('/api/visitor/:id', (req, res) => {
 
 
 /* ============================================================================
-   SECTION 5: LIST ENDPOINT — GET /api/list/:id
+   SECTION 5: GET LIST — GET /api/list/:id
    ============================================================================
    Returns everything about a list in one response:
    {
      list:     { id, created },
-     movies:   [ { id, tmdb_id, title, year, poster, added_by }, ... ],
-     visitors: [ { id, name, color }, ... ],
-     rankings: { visitorId: [movieId, movieId, ...], ... },
-     comments: [ { movie_id, visitor_id, text }, ... ]
+     visitors: { "1": { id, name, color, slot }, "2": { ... }, ... },
+     movies:   [ { id, tmdb_id, title, year, poster, added_by,
+                   user1_rank, user1_comment, user2_rank, ... }, ... ]
    }
 
-   The "visitors" array contains only visitors who are active on THIS list
-   (they've added a movie, ranked, or commented). We figure this out by
-   looking at who appears in movies.added_by, rankings.visitor_id, or
-   comments.visitor_id for this list.
+   Visitors are keyed by SLOT NUMBER (not visitor ID). This makes it easy
+   for app.js to know "user3_rank belongs to the visitor in slot 3".
 
-   Rankings are returned as an object keyed by visitor ID, where each value
-   is an ordered array of movie IDs. This is what app.js expects — it
-   matches the structure of the myRanking state variable.
+   Movies come back with all 20 rank/comment columns. Slots without a
+   visitor assigned will have NULL in their columns — app.js ignores those.
    ============================================================================ */
 
 app.get('/api/list/:id', (req, res) => {
@@ -201,73 +166,102 @@ app.get('/api/list/:id', (req, res) => {
   const list = db.prepare('SELECT * FROM lists WHERE id = ?').get(listId);
   if (!list) return res.status(404).json({ error: 'list not found' });
 
-  /* fetch all movies on this list */
+  /* fetch all movies — they already contain ranks and comments inline */
   const movies = db.prepare('SELECT * FROM movies WHERE list_id = ?').all(listId);
 
-  /* figure out which visitor IDs are active on this list */
-  const visitorIds = new Set();
-  movies.forEach(m => visitorIds.add(m.added_by));
-
-  const rankingRows = db.prepare('SELECT * FROM rankings WHERE list_id = ? ORDER BY position')
-    .all(listId);
-  rankingRows.forEach(r => visitorIds.add(r.visitor_id));
-
-  const comments = db.prepare('SELECT * FROM comments WHERE list_id = ?').all(listId);
-  comments.forEach(c => visitorIds.add(c.visitor_id));
-
-  /* fetch visitor profiles for all active visitor IDs */
-  const visitors = [];
-  visitorIds.forEach(vid => {
-    const v = db.prepare('SELECT * FROM visitors WHERE id = ?').get(vid);
-    if (v) visitors.push(v);
+  /* fetch slot assignments and look up each visitor's profile */
+  const slots = db.prepare('SELECT * FROM list_visitors WHERE list_id = ?').all(listId);
+  const visitors = {};                                             // keyed by slot number
+  slots.forEach(s => {
+    const v = db.prepare('SELECT * FROM visitors WHERE id = ?').get(s.visitor_id);
+    if (v) {
+      visitors[s.slot] = { id: v.id, name: v.name, color: v.color, slot: s.slot };
+    }
   });
 
-  /* build rankings object: { visitorId: [movieId, movieId, ...] } */
-  const rankings = {};
-  rankingRows.forEach(r => {
-    if (!rankings[r.visitor_id]) rankings[r.visitor_id] = [];
-    rankings[r.visitor_id].push(r.movie_id);
-  });
-
-  res.json({ list, movies, visitors, rankings, comments });
+  res.json({ list, visitors, movies });
 });
 
 
 /* ============================================================================
-   SECTION 6: CHECK NAME — GET /api/list/:id/check-name/:name
+   SECTION 6: JOIN LIST — POST /api/list/:id/join
+   ============================================================================
+   Assigns a visitor to the next available slot (1-10) on this list.
+   If the visitor already has a slot, returns that slot.
+   If all 10 slots are taken, returns an error.
+
+   After assigning a slot, initializes ranks for all existing movies:
+   each movie gets a sequential rank (1, 2, 3...) in movie-ID order.
+   This means a new visitor immediately has a complete ranking — no gaps,
+   no NULLs in their column.
+
+   Body: { visitor_id }
+   Returns: { slot: N }
+   ============================================================================ */
+
+app.post('/api/list/:id/join', (req, res) => {
+  const listId = req.params.id;
+  const { visitor_id } = req.body;
+
+  /* check if this visitor already has a slot on this list */
+  const existing = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+  ).get(listId, visitor_id);
+  if (existing) return res.json({ slot: existing.slot });          // already joined
+
+  /* find the next open slot (1-10) */
+  const taken = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ? ORDER BY slot'
+  ).all(listId).map(r => r.slot);
+
+  let nextSlot = null;
+  for (let s = 1; s <= 10; s++) {
+    if (!taken.includes(s)) { nextSlot = s; break; }
+  }
+  if (!nextSlot) return res.status(400).json({ error: 'list full (max 10 visitors)' });
+
+  /* assign the slot */
+  db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
+    .run(listId, nextSlot, visitor_id);
+
+  /* initialize ranks for all existing movies in this slot's column
+     each movie gets a sequential rank (1, 2, 3...) in movie-ID order */
+  const movies = db.prepare(
+    'SELECT id FROM movies WHERE list_id = ? ORDER BY id'
+  ).all(listId);
+
+  const col = 'user' + nextSlot + '_rank';
+  const stmt = db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?');
+  movies.forEach((m, i) => {
+    stmt.run(i + 1, m.id);                                         // rank 1, 2, 3, ...
+  });
+
+  res.json({ slot: nextSlot });
+});
+
+
+/* ============================================================================
+   SECTION 7: CHECK NAME — GET /api/list/:id/check-name/:name
    ============================================================================
    Checks if a name is already used by a DIFFERENT visitor on this list.
    Query param: ?visitor_id=xxx (the current visitor, excluded from check)
-
    Returns { taken: true } or { taken: false }.
-
-   Used by app.js before creating/updating a visitor name, so we can warn
-   the user that they'll appear as "Doug(2)" before it happens.
-
-   "Active on this list" means the name belongs to a visitor who has added
-   a movie, ranked, or commented on this specific list.
    ============================================================================ */
 
 app.get('/api/list/:id/check-name/:name', (req, res) => {
   const listId = req.params.id;
-  const name = req.params.name;                       // Express already decodes URL params
+  const name = req.params.name;
   const excludeVisitor = req.query.visitor_id;
 
-  /* find all visitor IDs active on this list */
-  const movies = db.prepare('SELECT DISTINCT added_by FROM movies WHERE list_id = ?').all(listId);
-  const ranks = db.prepare('SELECT DISTINCT visitor_id FROM rankings WHERE list_id = ?').all(listId);
-  const comms = db.prepare('SELECT DISTINCT visitor_id FROM comments WHERE list_id = ?').all(listId);
+  /* find all visitor IDs on this list via list_visitors (much simpler than v1) */
+  const slots = db.prepare(
+    'SELECT visitor_id FROM list_visitors WHERE list_id = ?'
+  ).all(listId);
 
-  const activeIds = new Set();
-  movies.forEach(m => activeIds.add(m.added_by));
-  ranks.forEach(r => activeIds.add(r.visitor_id));
-  comms.forEach(c => activeIds.add(c.visitor_id));
-
-  /* check if any active visitor (other than us) has this name */
   let taken = false;
-  activeIds.forEach(vid => {
-    if (vid === excludeVisitor) return;
-    const v = db.prepare('SELECT name FROM visitors WHERE id = ?').get(vid);
+  slots.forEach(s => {
+    if (s.visitor_id === excludeVisitor) return;                   // skip ourselves
+    const v = db.prepare('SELECT name FROM visitors WHERE id = ?').get(s.visitor_id);
     if (v && v.name && v.name.toLowerCase() === name.toLowerCase()) {
       taken = true;
     }
@@ -278,17 +272,19 @@ app.get('/api/list/:id/check-name/:name', (req, res) => {
 
 
 /* ============================================================================
-   SECTION 7: ADD MOVIE — POST /api/list/:id/movies
+   SECTION 8: ADD MOVIE — POST /api/list/:id/movies
    ============================================================================
-   Adds a movie to a list. Creates the list if it doesn't exist yet
-   (first movie added = list created).
+   Adds a movie to a list. Creates the list if it doesn't exist yet.
 
    Body: { tmdb_id, title, year, poster, visitor_id }
 
-   Checks for duplicates — if this tmdb_id is already on this list, returns
-   the existing movie instead of adding a duplicate.
+   After inserting the movie:
+   1. If the visitor doesn't have a slot yet, auto-join them (next open slot).
+   2. For every occupied slot, set that slot's rank for this movie to
+      (current movie count) — the new movie starts at LAST PLACE for everyone.
 
-   Returns the movie row (with its auto-generated id).
+   This guarantees: after adding a movie, every visitor has a rank for it,
+   and no visitor has any gaps in their ranking numbers.
    ============================================================================ */
 
 app.post('/api/list/:id/movies', (req, res) => {
@@ -298,7 +294,8 @@ app.post('/api/list/:id/movies', (req, res) => {
   /* create the list if it doesn't exist yet */
   const existingList = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
   if (!existingList) {
-    db.prepare('INSERT INTO lists (id, created) VALUES (?, ?)').run(listId, new Date().toISOString().split('T')[0]);
+    db.prepare('INSERT INTO lists (id, created) VALUES (?, ?)')
+      .run(listId, new Date().toISOString().split('T')[0]);
   }
 
   /* check for duplicate — same TMDB movie already on this list */
@@ -306,23 +303,75 @@ app.post('/api/list/:id/movies', (req, res) => {
     .get(listId, tmdb_id);
   if (existing) return res.json(existing);
 
-  /* insert the movie */
+  /* auto-join: if this visitor has no slot, assign one now */
+  let visitorSlot = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+  ).get(listId, visitor_id);
+
+  if (!visitorSlot) {
+    /* find next open slot */
+    const taken = db.prepare(
+      'SELECT slot FROM list_visitors WHERE list_id = ? ORDER BY slot'
+    ).all(listId).map(r => r.slot);
+
+    let nextSlot = null;
+    for (let s = 1; s <= 10; s++) {
+      if (!taken.includes(s)) { nextSlot = s; break; }
+    }
+    if (!nextSlot) return res.status(400).json({ error: 'list full' });
+
+    db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
+      .run(listId, nextSlot, visitor_id);
+    visitorSlot = { slot: nextSlot };
+
+    /* initialize this new visitor's ranks for all EXISTING movies */
+    const existingMovies = db.prepare(
+      'SELECT id FROM movies WHERE list_id = ? ORDER BY id'
+    ).all(listId);
+    const col = 'user' + nextSlot + '_rank';
+    const initStmt = db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?');
+    existingMovies.forEach((m, i) => {
+      initStmt.run(i + 1, m.id);
+    });
+  }
+
+  /* insert the new movie */
   const result = db.prepare(
     'INSERT INTO movies (list_id, tmdb_id, title, year, poster, added_by) VALUES (?, ?, ?, ?, ?, ?)'
   ).run(listId, tmdb_id, title, year, poster, visitor_id);
+  const newMovieId = result.lastInsertRowid;
 
-  res.json({ id: result.lastInsertRowid, list_id: listId, tmdb_id, title, year, poster, added_by: visitor_id });
+  /* count total movies now (including the one we just added) — this is the
+     new movie's rank (last place) for everyone */
+  const movieCount = db.prepare(
+    'SELECT COUNT(*) as n FROM movies WHERE list_id = ?'
+  ).get(listId).n;
+
+  /* set every occupied slot's rank for this new movie to last place */
+  const slots = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ?'
+  ).all(listId);
+
+  slots.forEach(s => {
+    const col = 'user' + s.slot + '_rank';
+    db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?')
+      .run(movieCount, newMovieId);
+  });
+
+  /* return the full new movie row */
+  const newMovie = db.prepare('SELECT * FROM movies WHERE id = ?').get(newMovieId);
+  res.json(newMovie);
 });
 
 
 /* ============================================================================
-   SECTION 8: REMOVE MOVIE — DELETE /api/list/:id/movies/:movieId
+   SECTION 9: REMOVE MOVIE — DELETE /api/list/:id/movies/:movieId
    ============================================================================
-   Removes a movie from the list. Only the person who added it can remove it
-   (body must include visitor_id matching the movie's added_by).
+   Removes a movie from the list. Only the person who added it can remove it.
 
-   Also cleans up: removes all rankings and comments for this movie,
-   since they'd be orphaned.
+   After deleting, re-compacts ranks: for every occupied slot, any movie
+   whose rank was GREATER than the deleted movie's rank gets decremented
+   by 1. This keeps ranks contiguous (1, 2, 3... with no gaps).
    ============================================================================ */
 
 app.delete('/api/list/:id/movies/:movieId', (req, res) => {
@@ -331,98 +380,118 @@ app.delete('/api/list/:id/movies/:movieId', (req, res) => {
   const { visitor_id } = req.body;
 
   /* verify ownership */
-  const movie = db.prepare('SELECT * FROM movies WHERE id = ? AND list_id = ?').get(movieId, listId);
+  const movie = db.prepare('SELECT * FROM movies WHERE id = ? AND list_id = ?')
+    .get(movieId, listId);
   if (!movie) return res.status(404).json({ error: 'movie not found' });
   if (movie.added_by !== visitor_id) return res.status(403).json({ error: 'not your movie' });
 
-  /* delete the movie and its related data */
-  db.prepare('DELETE FROM movies WHERE id = ?').run(movieId);
-  db.prepare('DELETE FROM rankings WHERE list_id = ? AND movie_id = ?').run(listId, movieId);
-  db.prepare('DELETE FROM comments WHERE list_id = ? AND movie_id = ?').run(listId, movieId);
+  /* for each occupied slot, find the deleted movie's rank and re-compact */
+  const slots = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ?'
+  ).all(listId);
 
-  res.json({ ok: true });
-});
-
-
-/* ============================================================================
-   SECTION 9: SAVE RANKINGS — PUT /api/list/:id/rankings
-   ============================================================================
-   Replaces a visitor's entire ranking for a list.
-
-   Body: { visitor_id, ranking: [movieId, movieId, ...] }
-
-   Strategy: DELETE all existing rankings for this visitor on this list,
-   then INSERT each movie at its new position. This is simpler and safer
-   than trying to UPDATE individual rows — we're replacing the whole order.
-
-   The ranking array is ordered: index 0 = position 1, index 1 = position 2, etc.
-   ============================================================================ */
-
-app.put('/api/list/:id/rankings', (req, res) => {
-  const listId = req.params.id;
-  const { visitor_id, ranking } = req.body;
-
-  /* delete all existing rankings for this visitor on this list */
-  db.prepare('DELETE FROM rankings WHERE list_id = ? AND visitor_id = ?').run(listId, visitor_id);
-
-  /* insert each movie at its position */
-  const insert = db.prepare(
-    'INSERT INTO rankings (list_id, visitor_id, movie_id, position) VALUES (?, ?, ?, ?)'
-  );
-
-  ranking.forEach((movieId, index) => {
-    insert.run(listId, visitor_id, movieId, index + 1);
+  slots.forEach(s => {
+    const col = 'user' + s.slot + '_rank';
+    const deletedRank = movie[col];                                // what rank did this movie have?
+    if (deletedRank != null) {
+      /* decrement all ranks that were below (higher number = lower rank) */
+      db.prepare(
+        'UPDATE movies SET ' + col + ' = ' + col + ' - 1 '
+        + 'WHERE list_id = ? AND ' + col + ' > ?'
+      ).run(listId, deletedRank);
+    }
   });
 
+  /* now delete the movie row */
+  db.prepare('DELETE FROM movies WHERE id = ?').run(movieId);
+
   res.json({ ok: true });
 });
 
 
 /* ============================================================================
-   SECTION 10: SAVE COMMENT — PUT /api/list/:id/comments
+   SECTION 10: SWAP RANK — PUT /api/list/:id/swap
+   ============================================================================
+   Moves a movie up or down by one position in a visitor's ranking.
+
+   Body: { slot, movieId, direction: "up" | "down" }
+
+   "up" means rank gets SMALLER (closer to #1).
+   "down" means rank gets BIGGER (further from #1).
+
+   Finds the movie at the target rank and swaps the two. Two UPDATEs.
+   This replaces the old drag-and-drop system entirely.
+   ============================================================================ */
+
+app.put('/api/list/:id/swap', (req, res) => {
+  const listId = req.params.id;
+  const { slot, movieId, direction } = req.body;
+
+  const col = 'user' + slot + '_rank';
+
+  /* get the current rank of the movie being moved */
+  const movie = db.prepare('SELECT id, ' + col + ' as rank FROM movies WHERE id = ? AND list_id = ?')
+    .get(movieId, listId);
+  if (!movie) return res.status(404).json({ error: 'movie not found' });
+
+  /* calculate the target rank */
+  const targetRank = direction === 'up' ? movie.rank - 1 : movie.rank + 1;
+
+  /* bounds check: can't go above 1 or below movie count */
+  const movieCount = db.prepare('SELECT COUNT(*) as n FROM movies WHERE list_id = ?').get(listId).n;
+  if (targetRank < 1 || targetRank > movieCount) {
+    return res.json({ ok: true });                                 // no-op, already at the edge
+  }
+
+  /* find the movie currently at the target rank */
+  const other = db.prepare(
+    'SELECT id FROM movies WHERE list_id = ? AND ' + col + ' = ?'
+  ).get(listId, targetRank);
+
+  if (!other) return res.json({ ok: true });                       // shouldn't happen, but safe
+
+  /* swap: give our movie the target rank, give the other movie our old rank */
+  db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(targetRank, movieId);
+  db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(movie.rank, other.id);
+
+  res.json({ ok: true });
+});
+
+
+/* ============================================================================
+   SECTION 11: SAVE COMMENT — PUT /api/list/:id/comments
    ============================================================================
    Creates or updates a visitor's comment on a movie.
 
    Body: { movie_id, visitor_id, text }
 
-   Uses INSERT OR REPLACE with the UNIQUE constraint on
-   (list_id, movie_id, visitor_id) — if this visitor already has a comment
-   on this movie, it's replaced. If not, a new one is created.
-
-   If the text is empty, we DELETE the comment instead of saving blank text.
+   Looks up the visitor's slot from list_visitors, then updates the
+   corresponding userN_comment column on the movie row.
+   If text is empty, sets the column to NULL (removes the comment).
    ============================================================================ */
 
 app.put('/api/list/:id/comments', (req, res) => {
   const listId = req.params.id;
   const { movie_id, visitor_id, text } = req.body;
 
-  if (!text || text.trim() === '') {
-    /* empty comment = delete it */
-    db.prepare('DELETE FROM comments WHERE list_id = ? AND movie_id = ? AND visitor_id = ?')
-      .run(listId, movie_id, visitor_id);
-  } else {
-    /* create or update the comment */
-    db.prepare(
-      'INSERT OR REPLACE INTO comments (list_id, movie_id, visitor_id, text) VALUES (?, ?, ?, ?)'
-    ).run(listId, movie_id, visitor_id, text);
-  }
+  /* find this visitor's slot on this list */
+  const slotRow = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+  ).get(listId, visitor_id);
+  if (!slotRow) return res.status(400).json({ error: 'visitor not on this list' });
+
+  const col = 'user' + slotRow.slot + '_comment';
+  const value = (text && text.trim() !== '') ? text.trim() : null; // empty → NULL
+
+  db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ? AND list_id = ?')
+    .run(value, movie_id, listId);
 
   res.json({ ok: true });
 });
 
 
 /* ============================================================================
-   SECTION 11: CATCH-ALL ROUTE — serve index.html for any unknown path
-   ============================================================================
-   When the browser requests "/a1b2c3d4" (a list URL), Express doesn't have
-   a matching static file or API route. Without this catch-all, it would
-   return 404.
-
-   Instead, we serve index.html for ALL non-API GET requests. Then app.js
-   reads the URL path, extracts the list ID, and handles it from there.
-
-   This is called "client-side routing" — the server always serves the same
-   HTML page, and the JavaScript figures out what to show based on the URL.
+   SECTION 12: CATCH-ALL ROUTE — serve index.html for any unknown path
    ============================================================================ */
 
 app.get('*', (req, res) => {
@@ -431,10 +500,7 @@ app.get('*', (req, res) => {
 
 
 /* ============================================================================
-   SECTION 12: START THE SERVER
-   ============================================================================
-   Listen on the configured port (default 3000). Log a message so you know
-   it's running. That's it — Express handles everything from here.
+   SECTION 13: START THE SERVER
    ============================================================================ */
 
 app.listen(PORT, () => {

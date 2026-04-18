@@ -499,12 +499,18 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
 
   let rankHtml;
   if (isMyTab && mySlot) {
-    /* show up/down arrows — clicking these calls swapRank() */
+    /* show single arrows (swap one) on left, rank number center, double arrows (jump to edge) on right */
     rankHtml = '<div class="entry-rank">'
+      + '<div class="rank-arrows">'
       + '<div class="arrow-up" data-movie-id="' + movie.id + '">&#9650;</div>'
-      + '<span class="rank-number">' + position + '</span>'
-      + tieHtml
       + '<div class="arrow-down" data-movie-id="' + movie.id + '">&#9660;</div>'
+      + '</div>'
+      + '<span class="rank-number">' + position + '</span>'
+      + '<div class="rank-arrows">'
+      + '<div class="arrow-top" data-movie-id="' + movie.id + '"><span>&#9650;</span><span>&#9650;</span></div>'
+      + '<div class="arrow-bottom" data-movie-id="' + movie.id + '"><span>&#9660;</span><span>&#9660;</span></div>'
+      + '</div>'
+      + tieHtml
       + '</div>';
   } else {
     /* read-only rank number */
@@ -599,6 +605,19 @@ async function swapRank(movieId, direction) {
   if (!mySlot) return;                                             // can't swap if we're not on the list
 
   await fetch(API + '/list/' + listId + '/swap', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slot: mySlot, movieId: movieId, direction: direction })
+  });
+
+  await loadList();
+}
+
+
+async function moveToEdge(movieId, direction) {
+  if (!mySlot) return;
+
+  await fetch(API + '/list/' + listId + '/move', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ slot: mySlot, movieId: movieId, direction: direction })
@@ -1154,6 +1173,20 @@ function setupEventListeners() {
     const arrowDown = e.target.closest('.arrow-down');
     if (arrowDown) {
       swapRank(parseInt(arrowDown.dataset.movieId), 'down');
+      return;
+    }
+
+    /* DOUBLE UP ARROW — move movie to #1 */
+    const arrowTop = e.target.closest('.arrow-top');
+    if (arrowTop) {
+      moveToEdge(parseInt(arrowTop.dataset.movieId), 'top');
+      return;
+    }
+
+    /* DOUBLE DOWN ARROW — move movie to last place */
+    const arrowBottom = e.target.closest('.arrow-bottom');
+    if (arrowBottom) {
+      moveToEdge(parseInt(arrowBottom.dataset.movieId), 'bottom');
       return;
     }
 

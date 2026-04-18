@@ -278,37 +278,59 @@ html, body {
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
 
-/* --- Rank number column --- */
+/* --- Rank number column ---
+   Layout when arrows are shown (your own tab):
+     [▲]        [▲▲]
+     [▼]  rank  [▼▼]
+   Single arrows on the left swap one position.
+   Double arrows on the right jump to top/bottom. */
 
 .entry-rank {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  min-width: 32px;
+  justify-content: center;
+  gap: 2px;
+  min-width: 36px;
+  min-height: 69px;
   flex-shrink: 0;
 }
 
 .rank-number {
-  font-size: 20px;
+  font-size: 32px;
   font-weight: bold;
   color: #e94560;
+  min-width: 34px;
+  text-align: center;
 }
 
-/* --- Up/Down arrows for reordering ---
-   Shown only on your own tab. Clicking swaps this movie's rank with
-   the one above (up) or below (down). */
+/* --- Arrow columns (single and double) --- */
 
-.arrow-up, .arrow-down {
-  font-size: 12px;
+.rank-arrows {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.arrow-up, .arrow-down, .arrow-top, .arrow-bottom {
+  font-size: 14px;
   color: #666;
   cursor: pointer;
   user-select: none;
   text-align: center;
-  padding: 4px 0;
+  padding: 6px 4px;
   line-height: 1;
 }
 
-.arrow-up:active, .arrow-down:active {
+.arrow-top, .arrow-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 0.6;
+}
+
+.arrow-up:active, .arrow-down:active,
+.arrow-top:active, .arrow-bottom:active {
   color: #e94560;
 }
 

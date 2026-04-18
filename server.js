@@ -347,15 +347,25 @@ app.post('/api/list/:id/movies', (req, res) => {
     'SELECT COUNT(*) as n FROM movies WHERE list_id = ?'
   ).get(listId).n;
 
-  /* set every occupied slot's rank for this new movie to last place */
+  /* set every occupied slot's rank for this new movie to last place,
+     EXCEPT the adder gets it at #1 (bump all their other movies down) */
   const slots = db.prepare(
     'SELECT slot FROM list_visitors WHERE list_id = ?'
   ).all(listId);
 
   slots.forEach(s => {
     const col = 'user' + s.slot + '_rank';
-    db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?')
-      .run(movieCount, newMovieId);
+    if (s.slot === visitorSlot.slot) {
+      /* adder: bump all existing movies down by 1, then set new movie to rank 1 */
+      db.prepare(
+        'UPDATE movies SET ' + col + ' = ' + col + ' + 1 WHERE list_id = ? AND id != ?'
+      ).run(listId, newMovieId);
+      db.prepare('UPDATE movies SET ' + col + ' = 1 WHERE id = ?').run(newMovieId);
+    } else {
+      /* everyone else: new movie goes to last place */
+      db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?')
+        .run(movieCount, newMovieId);
+    }
   });
 
   /* return the full new movie row */
@@ -453,6 +463,51 @@ app.put('/api/list/:id/swap', (req, res) => {
   /* swap: give our movie the target rank, give the other movie our old rank */
   db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(targetRank, movieId);
   db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(movie.rank, other.id);
+
+  res.json({ ok: true });
+});
+
+
+/* ============================================================================
+   SECTION 10b: MOVE TO TOP/BOTTOM — PUT /api/list/:id/move
+   ============================================================================
+   Moves a movie to rank 1 (top) or last place (bottom) in a visitor's ranking.
+
+   Body: { slot, movieId, direction: "top" | "bottom" }
+
+   Shifts all movies in between to fill the gap and make room.
+   ============================================================================ */
+
+app.put('/api/list/:id/move', (req, res) => {
+  const listId = req.params.id;
+  const { slot, movieId, direction } = req.body;
+
+  const col = 'user' + slot + '_rank';
+
+  /* get the current rank of the movie being moved */
+  const movie = db.prepare('SELECT id, ' + col + ' as rank FROM movies WHERE id = ? AND list_id = ?')
+    .get(movieId, listId);
+  if (!movie) return res.status(404).json({ error: 'movie not found' });
+
+  const movieCount = db.prepare('SELECT COUNT(*) as n FROM movies WHERE list_id = ?').get(listId).n;
+  const targetRank = (direction === 'top') ? 1 : movieCount;
+
+  if (movie.rank === targetRank) return res.json({ ok: true });       // already there
+
+  if (direction === 'top') {
+    /* shift everything above (rank < current) down by 1 to make room at rank 1 */
+    db.prepare(
+      'UPDATE movies SET ' + col + ' = ' + col + ' + 1 WHERE list_id = ? AND ' + col + ' < ? AND id != ?'
+    ).run(listId, movie.rank, movieId);
+  } else {
+    /* shift everything below (rank > current) up by 1 to fill the gap */
+    db.prepare(
+      'UPDATE movies SET ' + col + ' = ' + col + ' - 1 WHERE list_id = ? AND ' + col + ' > ? AND id != ?'
+    ).run(listId, movie.rank, movieId);
+  }
+
+  /* set the movie to its new rank */
+  db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(targetRank, movieId);
 
   res.json({ ok: true });
 });

@@ -1,3 +1,6 @@
 node_modules/
 whattowatch.db
+whattowatch.db-shm
+whattowatch.db-wal
+whattowatch.db-journal
 .env

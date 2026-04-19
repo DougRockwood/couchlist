@@ -1132,12 +1132,16 @@ function setupEventListeners() {
     /* name input — let native focus behavior happen, don't switch tabs */
     if (e.target.closest('.tab-name-input')) return;
 
-    /* color dot on your own tab → open native color picker */
+    /* color dot: your own → open native color picker; anyone else's →
+       treat as a click on their tab */
     const colorDot = e.target.closest('.tab-color-dot');
     if (colorDot) {
       const tab = colorDot.closest('.tab');
-      if (tab && tab.dataset.tab === visitorId && visitor) {
+      if (!tab) return;
+      if (tab.dataset.tab === visitorId && visitor) {
         document.getElementById('color-picker').click();
+      } else {
+        handleTabClick(tab.dataset.tab);
       }
       return;
     }

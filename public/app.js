@@ -38,7 +38,6 @@ const API           = '/api';
 const LIST_ID_LEN   = 8;
 const VISITOR_ID_LEN = 10;
 const DEBOUNCE_MS   = 300;
-const LONG_PRESS_MS = 500;
 
 
 /* ============================================================================
@@ -166,6 +165,7 @@ async function handleColorChange(newColor) {
     body: JSON.stringify({ name: visitor.name, color: newColor })
   });
 
+  renderUserTabs();
   renderList();
 }
 
@@ -735,49 +735,60 @@ function findCommentText(movieId, vid) {
 
 function renderUserTabs() {
   const tabBar = document.getElementById('tab-bar');
+  let html = '';
 
   /* Couch tab — always first */
-  let html = '<div class="tab' + (activeTab === 'couch' ? ' tab-active' : '') + '" '
+  html += '<div class="tab tab-couch' + (activeTab === 'couch' ? ' tab-active' : '') + '" '
     + 'data-tab="couch">Couch List</div>';
 
-  /* one tab per visitor on this list, in slot order */
+  /* one tab per other visitor (not us) in slot order */
   const sortedSlots = Object.keys(listData.visitors).sort((a, b) => a - b);
   sortedSlots.forEach(slot => {
     const v = listData.visitors[slot];
-    const isActive = (activeTab === v.id);
-    const isSelected = selectedVisitors[v.id] !== false;
-    html += '<div class="tab' + (isActive ? ' tab-active' : '')
-      + (isSelected ? '' : ' tab-dimmed') + '" '
-      + 'data-tab="' + v.id + '">'
-      + escapeHtml(displayNames[v.id] || v.name)
-      + ' <span class="color-swatch" style="background:' + escapeHtml(v.color) + '"></span>'
-      + '</div>';
+    if (v.id === visitorId) return;
+    html += buildVisitorTab(v, false);
   });
 
-  /* show our own tab if we have a name but aren't on the list yet */
-  if (visitor && !Object.values(listData.visitors).find(v => v.id === visitorId)) {
-    const isActive = (activeTab === visitorId);
-    const isSelected = selectedVisitors[visitorId] !== false;
-    html += '<div class="tab' + (isActive ? ' tab-active' : '')
-      + (isSelected ? '' : ' tab-dimmed') + '" '
-      + 'data-tab="' + visitorId + '">'
-      + escapeHtml(displayNames[visitorId] || visitor.name)
-      + ' <span class="color-swatch" style="background:' + escapeHtml(visitor.color) + '"></span>'
+  /* your own tab */
+  if (visitor) {
+    html += buildVisitorTab(visitor, true);
+    html += '<input type="color" id="color-picker" value="' + escapeHtml(visitor.color) + '" '
+      + 'style="display:none">';
+  } else {
+    /* brand new visitor — no name yet. Tab has just the name input. */
+    html += '<div class="tab tab-mine tab-new">'
+      + '<input id="name-input" class="tab-name-input" type="text" '
+      + 'placeholder="enter your name" autocomplete="off">'
       + '</div>';
   }
 
-  /* name input — only show if visitor hasn't entered a name */
-  if (!visitor) {
-    html += '<div class="name-entry">'
-      + '<input id="name-input" type="text" placeholder="enter your name">'
-      + '<span id="name-warning" style="display:none"></span>'
-      + '</div>';
-  } else {
-    html += '<input type="color" id="color-picker" value="' + visitor.color + '" '
-      + 'style="display:none">';
-  }
+  html += '<span id="name-warning" style="display:none"></span>';
 
   tabBar.innerHTML = html;
+}
+
+function buildVisitorTab(v, isMe) {
+  const isActive = (activeTab === v.id);
+  const isSelected = selectedVisitors[v.id] !== false;
+
+  const classes = ['tab', 'tab-user'];
+  if (isActive) classes.push('tab-active');
+  if (!isSelected) classes.push('tab-dimmed');
+  if (isMe) classes.push('tab-mine');
+
+  let html = '<div class="' + classes.join(' ') + '" data-tab="' + v.id + '" '
+    + 'style="background:' + escapeHtml(v.color) + '">';
+  html += '<span class="tab-color-dot" style="background:' + escapeHtml(v.color) + '"></span>';
+  if (isMe) {
+    html += '<input class="tab-name-input" type="text" value="'
+      + escapeHtml(v.name) + '" autocomplete="off">';
+  } else {
+    html += '<span class="tab-name">' + escapeHtml(displayNames[v.id] || v.name) + '</span>';
+  }
+  html += '<span class="tab-ready-btn ' + (isSelected ? 'ready' : 'not-ready') + '">'
+    + (isSelected ? 'RDY' : 'NAW') + '</span>';
+  html += '</div>';
+  return html;
 }
 
 function handleTabClick(tabId) {
@@ -786,10 +797,23 @@ function handleTabClick(tabId) {
   renderUserTabs();
 }
 
-function handleTabLongPress(tabVisitorId) {
+function handleReadyToggle(tabVisitorId) {
   if (tabVisitorId === 'couch') return;
   selectedVisitors[tabVisitorId] = !selectedVisitors[tabVisitorId];
-  renderUserTabs();
+
+  /* surgical DOM update — preserves focus in any open name input */
+  const tabEl = document.querySelector('.tab[data-tab="' + tabVisitorId + '"]');
+  if (tabEl) {
+    const isSelected = selectedVisitors[tabVisitorId] !== false;
+    tabEl.classList.toggle('tab-dimmed', !isSelected);
+    const btn = tabEl.querySelector('.tab-ready-btn');
+    if (btn) {
+      btn.classList.toggle('ready', isSelected);
+      btn.classList.toggle('not-ready', !isSelected);
+      btn.textContent = isSelected ? 'RDY' : 'NAW';
+    }
+  }
+
   if (activeTab === 'couch') renderList();
 }
 
@@ -1101,59 +1125,71 @@ function setupEventListeners() {
     if (movie) addMovie(movie);
   });
 
-  /* --- TAB BAR: click and long-press --- */
-  let longPressTimer = null;
-  let longPressFired = false;
+  /* --- TAB BAR: single click handler dispatches based on what was clicked --- */
+  const tabBar = document.getElementById('tab-bar');
 
-  document.getElementById('tab-bar').addEventListener('pointerdown', e => {
-    const tab = e.target.closest('.tab');
-    if (!tab) return;
-    const tabId = tab.dataset.tab;
-    longPressFired = false;
-    longPressTimer = setTimeout(() => {
-      longPressFired = true;
-      handleTabLongPress(tabId);
-    }, LONG_PRESS_MS);
-  });
+  tabBar.addEventListener('click', e => {
+    /* name input — let native focus behavior happen, don't switch tabs */
+    if (e.target.closest('.tab-name-input')) return;
 
-  document.getElementById('tab-bar').addEventListener('pointerup', e => {
-    clearTimeout(longPressTimer);
-    if (longPressFired) return;
-    const tab = e.target.closest('.tab');
-    if (!tab) return;
-    handleTabClick(tab.dataset.tab);
-  });
-
-  document.getElementById('tab-bar').addEventListener('pointerleave', () => {
-    clearTimeout(longPressTimer);
-  });
-
-  /* --- COLOR PICKER --- */
-  document.getElementById('tab-bar').addEventListener('click', e => {
-    if (e.target.classList.contains('color-swatch') && visitor) {
-      const tab = e.target.closest('.tab');
-      if (tab && tab.dataset.tab === visitorId) {
+    /* color dot on your own tab → open native color picker */
+    const colorDot = e.target.closest('.tab-color-dot');
+    if (colorDot) {
+      const tab = colorDot.closest('.tab');
+      if (tab && tab.dataset.tab === visitorId && visitor) {
         document.getElementById('color-picker').click();
       }
+      return;
     }
+
+    /* RDY/NAW button → toggle ready state */
+    const readyBtn = e.target.closest('.tab-ready-btn');
+    if (readyBtn) {
+      const tab = readyBtn.closest('.tab');
+      if (tab) handleReadyToggle(tab.dataset.tab);
+      return;
+    }
+
+    /* tab body → switch active view */
+    const tab = e.target.closest('.tab');
+    if (tab) handleTabClick(tab.dataset.tab);
   });
 
+  /* color picker change */
   document.addEventListener('change', e => {
     if (e.target.id === 'color-picker') {
       handleColorChange(e.target.value);
     }
   });
 
-  /* --- NAME INPUT --- */
-  document.getElementById('tab-bar').addEventListener('keydown', e => {
-    if (e.target.id === 'name-input' && e.key === 'Enter') {
-      handleNameEntry(e.target.value);
+  /* name input — Enter blurs, blur commits */
+  tabBar.addEventListener('keydown', e => {
+    if (e.target.classList.contains('tab-name-input') && e.key === 'Enter') {
+      e.target.blur();
     }
   });
-  document.getElementById('tab-bar').addEventListener('focusout', e => {
-    if (e.target.id === 'name-input' && e.target.value.trim()) {
-      handleNameEntry(e.target.value);
-    }
+
+  tabBar.addEventListener('focusout', e => {
+    if (!e.target.classList.contains('tab-name-input')) return;
+    const newName = e.target.value.trim();
+    if (!newName) return;
+    if (visitor && newName === visitor.name) return;
+    handleNameEntry(newName);
+  });
+
+  /* focus into your own name input → make your tab the active view
+     (surgical class toggle so the input doesn't lose focus mid-click) */
+  tabBar.addEventListener('focusin', e => {
+    if (!e.target.classList.contains('tab-name-input')) return;
+    const tab = e.target.closest('.tab');
+    if (!tab) return;
+    const tabId = tab.dataset.tab;
+    if (!tabId || tabId === 'couch' || tabId === activeTab) return;
+    activeTab = tabId;
+    document.querySelectorAll('#tab-bar .tab').forEach(t => {
+      t.classList.toggle('tab-active', t.dataset.tab === tabId);
+    });
+    renderList();
   });
 
   /* --- MOVIE LIST: all click interactions --- */

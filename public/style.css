@@ -188,61 +188,130 @@ html, body {
 .tab {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 12px;
-  border-radius: 16px;
+  gap: 6px;
+  padding: 3px;
+  border-radius: 17px;
   background: #2a2a4a;
   color: #ccc;
   font-size: 14px;
   cursor: pointer;
   user-select: none;
   flex-shrink: 0;
+  height: 34px;
+}
+
+.tab-couch {
+  padding: 0 16px;
+  color: #ccc;
+}
+
+.tab-user {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
 }
 
 .tab-active {
-  background: #e94560;
-  color: #fff;
+  box-shadow: 0 0 0 2px #1a1a2e, 0 0 0 4px #e94560;
 }
 
 .tab-dimmed {
-  opacity: 0.35;
+  opacity: 0.45;
 }
 
-.color-swatch {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
+/* Left circle on a user tab: same color as the tab background, so it's
+   essentially invisible until hovered. Clicking your own opens the native
+   <input type="color"> picker. */
+.tab-color-dot {
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
-  border: 1px solid rgba(255,255,255,0.3);
+  flex-shrink: 0;
+  border: 1px solid rgba(0,0,0,0.2);
 }
 
-/* --- Name Entry (shown in tab bar when visitor has no name yet) --- */
+.tab-mine .tab-color-dot {
+  cursor: pointer;
+}
 
-.name-entry {
+.tab-mine .tab-color-dot:hover {
+  filter: brightness(1.12);
+  border-color: rgba(255,255,255,0.6);
+}
+
+.tab-name {
+  padding: 0 4px;
+  font-weight: 500;
+}
+
+.tab-name-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #fff;
+  font: inherit;
+  font-weight: 500;
+  padding: 0 4px;
+  width: 66px;
+  text-align: center;
+  text-shadow: inherit;
+}
+
+.tab-name-input::placeholder {
+  color: rgba(255,255,255,0.7);
+}
+
+.tab-name-input:focus {
+  background: rgba(255,255,255,0.12);
+  border-radius: 10px;
+}
+
+/* Right circle: ready-toggle. Replaces the old long-press gesture. */
+.tab-ready-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: bold;
+  cursor: pointer;
   flex-shrink: 0;
+  color: #fff;
+  letter-spacing: 0.3px;
+  text-shadow: none;
+  border: 1px solid rgba(0,0,0,0.25);
 }
 
-#name-input {
-  padding: 6px 10px;
-  font-size: 14px;
-  border: 1px solid #444;
-  border-radius: 16px;
+.tab-ready-btn.ready {
+  background: #2a9d3f;
+}
+
+.tab-ready-btn.not-ready {
+  background: #c0392b;
+}
+
+/* Brand-new visitor tab: no color / buttons yet, just the name entry. */
+.tab-new {
   background: #16213e;
-  color: #e0e0e0;
-  width: 140px;
-  outline: none;
+  padding: 3px 10px;
+  border: 1px solid #444;
 }
 
-#name-input:focus {
-  border-color: #e94560;
+.tab-new .tab-name-input {
+  color: #e0e0e0;
+  text-shadow: none;
+  width: 140px;
+}
+
+.tab-new .tab-name-input::placeholder {
+  color: #777;
 }
 
 #name-warning {
   color: #e94560;
   font-size: 12px;
+  margin-left: 6px;
 }
 
 

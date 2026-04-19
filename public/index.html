@@ -69,18 +69,16 @@
     </div>
 
     <!-- ================================================================
-         TAB BAR — Couch tab + visitor tabs + name input
+         TAB BAR — Couch tab + visitor tabs
          ================================================================
          app.js rebuilds this entirely via renderUserTabs().
-         Contents depend on state:
-           - Always: Couch tab
-           - Per visitor on this list: a tab with their name + color swatch
-           - If current visitor has no name yet: a name input field
-           - If current visitor has a name: a hidden color picker input
+         Each user tab is a pill colored with that visitor's chosen color:
+           [ color-dot ] [ name ] [ RDY/NAW ]
+         On your own tab the name is an editable input and the color-dot
+         opens the native color picker. The RDY/NAW circle on every tab
+         toggles inclusion in the Couch vote.
 
-         Click a tab → handleTabClick() switches the list ordering.
-         Long-press a tab → handleTabLongPress() toggles them in/out
-         of the Couch vote.
+         Click tab body → handleTabClick() switches the list ordering.
          ================================================================ -->
 
     <div id="tab-bar"></div>

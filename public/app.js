@@ -738,7 +738,7 @@ function renderUserTabs() {
 
   /* Couch tab — always first */
   let html = '<div class="tab' + (activeTab === 'couch' ? ' tab-active' : '') + '" '
-    + 'data-tab="couch">Couch</div>';
+    + 'data-tab="couch">Couch List</div>';
 
   /* one tab per visitor on this list, in slot order */
   const sortedSlots = Object.keys(listData.visitors).sort((a, b) => a - b);

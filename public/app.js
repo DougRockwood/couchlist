@@ -101,8 +101,19 @@ function initApp() {
     return loadList();
   }).then(() => {
     setupEventListeners();
-    console.log('app.js BUILD flat-redesign');
+    console.log('app.js BUILD details-paste');
     document.title = 'WTW';
+
+    /* pendingPaste hook: if a previous Apply redirected us here (either for
+       a URL swap or a visitor swap), run the blob now that we're on the
+       right list/visitor. applyPasteText clears the entry on success. */
+    const pending = sessionStorage.getItem('pendingPaste');
+    if (pending) {
+      const parsed = parseBlob(pending);
+      if (parsed && parsed.list_id === listId) {
+        applyPasteText(pending);
+      }
+    }
   });
 }
 
@@ -867,14 +878,39 @@ function hideMoviePopup() {
 
 
 /* ============================================================================
-   SECTION 12: COPY / PASTE + VISITOR ID MANAGEMENT
+   SECTION 12: DETAILS MODAL — export/import as one editable blob
    ============================================================================
-   Bottom-left button opens a modal with:
-   1. Your Visitor ID (copyable)
-   2. Restore Visitor ID (paste to recover)
-   3. List ID
-   4. Export (full list as text)
-   5. Import (paste text to bulk-add movies)
+   One big textarea showing the list as a markdown snapshot. User can Copy the
+   blob to the clipboard, or edit it and click Apply to merge changes back.
+
+   BLOB FORMAT (kept loose so hand-edits survive):
+     # CouchList Snapshot
+     URL:       https://.../<list_id>
+     List ID:   <list_id>
+     Created:   YYYY-MM-DD
+     Snapshot:  YYYY-MM-DD
+     Your ID:   <visitor_id>   (<your name>)
+
+     ## People
+     - Name    (you)
+     - Name
+
+     ## Movies
+     ### 1. Title (Year)
+     - tmdb:     <tmdb_id>
+     - added_by: <name>                 (ignored on apply — always current user)
+     - ranks:    Name #N, Name #N       (repeats for readability; ignored on parse)
+     - Name: comment text               (only current user's comments are applied)
+
+   APPLY RULES (additive):
+     - New movies always get added as the current user.
+     - Comments attributed to anyone other than the current user are dropped.
+     - Movie order in the textarea becomes the current user's personal ranking.
+     - If list_id differs: stash the blob, navigate to the new URL; the next
+       page load picks it up via sessionStorage.pendingPaste.
+     - If visitor_id differs: ensure that visitor exists, try to recycle the
+       current (untouched) visitor, swap the cookie, reload; pendingPaste
+       carries the blob through.
    ============================================================================ */
 
 function openCopyPasteModal() {
@@ -882,62 +918,40 @@ function openCopyPasteModal() {
   const visitorById = {};
   Object.values(listData.visitors).forEach(v => { visitorById[v.id] = v; });
 
-  modal.innerHTML = '<div class="modal-content">'
+  const blob = buildBlob(visitorById);
+
+  modal.innerHTML = '<div class="modal-content details-modal">'
     + '<button class="modal-close">✕</button>'
-
-    + '<div class="modal-section">'
-    + '<h3>Your Visitor ID</h3>'
-    + '<input type="text" id="visitor-id-display" readonly value="' + visitorId + '">'
-    + '<button id="copy-visitor-id-btn">Copy</button>'
-    + '<p class="modal-hint">Save this somewhere safe. If you clear your cookies, '
-    + 'paste it back below to restore your identity.</p>'
+    + '<div class="modal-welcome">'
+    +   '<p><strong>Welcome to CouchList!</strong> '
+    +     'Written by Doug and Claude Code · last edit 2026-04-19</p>'
+    +   '<p>This is an experimental, casual site with no secure identities '
+    +     'at all. You are just a series of letters and numbers to this site '
+    +     'and here they are in plain text:</p>'
     + '</div>'
-
-    + '<div class="modal-section">'
-    + '<h3>Restore Visitor ID</h3>'
-    + '<input type="text" id="restore-visitor-input" placeholder="paste old visitor ID">'
-    + '<button id="restore-visitor-btn">Restore</button>'
+    + '<textarea id="details-blob" spellcheck="false">'
+    +   escapeHtml(blob)
+    + '</textarea>'
+    + '<div class="modal-buttons">'
+    +   '<button id="copy-blob-btn">Copy</button>'
+    +   '<button id="apply-blob-btn">Apply</button>'
     + '</div>'
-
-    + '<div class="modal-section">'
-    + '<h3>List ID</h3>'
-    + '<input type="text" readonly value="' + listId + '">'
-    + '</div>'
-
-    + '<div class="modal-section">'
-    + '<h3>Export List</h3>'
-    + '<textarea id="export-text" readonly>' + escapeHtml(buildExportText(visitorById)) + '</textarea>'
-    + '<button id="copy-export-btn">Copy</button>'
-    + '</div>'
-
-    + '<div class="modal-section">'
-    + '<h3>Import List</h3>'
-    + '<textarea id="import-text" placeholder="Paste a list here..."></textarea>'
-    + '<button id="import-btn">Import</button>'
-    + '</div>'
-
+    + '<p class="modal-footnote">'
+    +   'Edit the snapshot above and click Apply — changes merge additively '
+    +   'and get attributed to you.'
+    + '</p>'
     + '</div>';
 
   modal.style.display = 'flex';
 
   modal.querySelector('.modal-close').addEventListener('click', closeCopyPasteModal);
 
-  modal.querySelector('#copy-visitor-id-btn').addEventListener('click', () => {
-    navigator.clipboard.writeText(visitorId);
+  modal.querySelector('#copy-blob-btn').addEventListener('click', () => {
+    navigator.clipboard.writeText(document.getElementById('details-blob').value);
   });
 
-  modal.querySelector('#restore-visitor-btn').addEventListener('click', () => {
-    const oldId = document.getElementById('restore-visitor-input').value;
-    restoreVisitorId(oldId);
-  });
-
-  modal.querySelector('#copy-export-btn').addEventListener('click', () => {
-    navigator.clipboard.writeText(document.getElementById('export-text').value);
-  });
-
-  modal.querySelector('#import-btn').addEventListener('click', () => {
-    const text = document.getElementById('import-text').value;
-    parseImportText(text);
+  modal.querySelector('#apply-blob-btn').addEventListener('click', () => {
+    applyPasteText(document.getElementById('details-blob').value);
   });
 }
 
@@ -945,88 +959,330 @@ function closeCopyPasteModal() {
   document.getElementById('copy-paste-modal').style.display = 'none';
 }
 
-function buildExportText(visitorById) {
-  /* sort movies by couch ranking (Borda) for export */
+
+/* ============================================================================
+   buildBlob(visitorById) — serialize the list as the markdown snapshot
+   ============================================================================
+   Only the current user's visitor ID is emitted. All other references are
+   by name only (the parser never needs anyone else's ID: movies are always
+   reattributed to the current user, and only the current user's comments
+   survive filtering).
+   ============================================================================ */
+
+function buildBlob(visitorById) {
+  const myName = (visitor && visitor.name) || 'You';
+
+  /* sort movies by the current user's personal rank if we have a slot */
   const movies = listData.movies.slice();
-
-  /* compute Borda scores for sorting */
-  const activeSlots = [];
-  Object.entries(listData.visitors).forEach(([slot, v]) => {
-    if (selectedVisitors[v.id] !== false) activeSlots.push(parseInt(slot));
+  let rankCol = null;
+  Object.values(listData.visitors).forEach(v => {
+    if (v.id === visitorId) rankCol = 'user' + v.slot + '_rank';
   });
-
-  if (activeSlots.length > 0) {
-    const numMovies = movies.length;
-    movies.forEach(m => {
-      m._score = 0;
-      activeSlots.forEach(slot => {
-        const rank = m['user' + slot + '_rank'];
-        m._score += (rank != null) ? rank : (numMovies + 1);
-      });
+  if (rankCol) {
+    movies.sort((a, b) => {
+      const ra = a[rankCol], rb = b[rankCol];
+      if (ra == null && rb == null) return 0;
+      if (ra == null) return 1;
+      if (rb == null) return -1;
+      return ra - rb;
     });
-    movies.sort((a, b) => a._score - b._score);
   }
 
-  let lines = [];
-  movies.forEach((movie, i) => {
-    const adder = visitorById[movie.added_by] || { name: '?' };
-    let line = (i + 1) + '. ' + movie.title + ' (' + movie.year + ')'
-      + ' - Added by ' + (displayNames[movie.added_by] || adder.name);
+  const slotOrder = Object.keys(listData.visitors)
+    .map(s => parseInt(s))
+    .sort((a, b) => a - b);
 
-    /* append comments from all slots */
-    Object.entries(listData.visitors).forEach(([slot, v]) => {
-      const text = movie['user' + slot + '_comment'];
-      if (text) {
-        line += ' - ' + (displayNames[v.id] || v.name) + ': ' + text;
-      }
+  const today = new Date().toISOString().split('T')[0];
+  const lines = [];
+  lines.push('# CouchList Snapshot');
+  lines.push('');
+  lines.push('URL:       ' + window.location.origin + '/' + listId);
+  lines.push('List ID:   ' + listId);
+  lines.push('Created:   ' + (listData.list.created || '?'));
+  lines.push('Snapshot:  ' + today);
+  lines.push('Your ID:   ' + visitorId + '   (' + myName + ')');
+  lines.push('');
+  lines.push('## People');
+  lines.push('');
+  slotOrder.forEach(s => {
+    const v = listData.visitors[s];
+    const tag = (v.id === visitorId) ? '   (you)' : '';
+    lines.push('- ' + (v.name || '?') + tag);
+  });
+  lines.push('');
+  lines.push('## Movies');
+  lines.push('');
+
+  movies.forEach((m, i) => {
+    lines.push('### ' + (i + 1) + '. ' + m.title + ' (' + m.year + ')');
+    lines.push('- tmdb:     ' + m.tmdb_id);
+    const adder = visitorById[m.added_by];
+    lines.push('- added_by: ' + (adder ? (adder.name || '?') : '?'));
+
+    const rankParts = [];
+    slotOrder.forEach(s => {
+      const v = listData.visitors[s];
+      const r = m['user' + s + '_rank'];
+      if (r != null) rankParts.push((v.name || '?') + ' #' + r);
+    });
+    if (rankParts.length) lines.push('- ranks:    ' + rankParts.join(', '));
+
+    slotOrder.forEach(s => {
+      const v = listData.visitors[s];
+      const c = m['user' + s + '_comment'];
+      if (c) lines.push('- ' + (v.name || '?') + ': ' + c);
     });
 
-    lines.push(line);
+    lines.push('');
   });
 
   return lines.join('\n');
 }
 
-async function parseImportText(text) {
-  if (!text || text.trim() === '') return;
 
-  const lines = text.trim().split('\n');
+/* ============================================================================
+   parseBlob(text) — read the markdown snapshot back into a structured object
+   ============================================================================
+   Returns { list_id, visitor_id, your_name, movies: [...] } or null on failure.
+   Each movie has { title, year, tmdb_id, comments: { name: text } }.
+   added_by and ranks lines are intentionally dropped — they're informational.
+   ============================================================================ */
 
-  for (const line of lines) {
-    const match = line.match(
-      /^\d+\.\s+(.+?)\s+\((\d{4})\)\s*-\s*Added by\s+(.+?)(?:\s*-\s*|$)/
-    );
-    if (!match) continue;
+function parseBlob(text) {
+  if (!text) return null;
+  const lines = text.split(/\r?\n/);
 
-    const title = match[1];
-    const year = parseInt(match[2]);
+  const result = {
+    list_id: null,
+    visitor_id: null,
+    your_name: null,
+    movies: []
+  };
 
-    const searchUrl = TMDB_BASE + '/search/movie'
-      + '?api_key=' + TMDB_API_KEY
-      + '&query=' + encodeURIComponent(title)
-      + '&year=' + year;
-    const searchResp = await fetch(searchUrl);
-    const searchData = await searchResp.json();
+  let inMovies = false;
+  let current = null;
 
-    if (searchData.results.length === 0) continue;
+  const reservedKeys = new Set(['tmdb', 'added_by', 'ranks']);
 
-    const tmdbMovie = searchData.results[0];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
 
-    await fetch(API + '/list/' + listId + '/movies', {
+    if (/^##\s+Movies\b/i.test(line)) { inMovies = true; continue; }
+    if (/^##\s+/.test(line))          { inMovies = false; continue; }
+
+    if (!inMovies) {
+      /* top-of-file key/value pairs */
+      const kv = line.match(/^([A-Za-z][A-Za-z ]*?):\s*(.+)$/);
+      if (!kv) continue;
+      const key = kv[1].toLowerCase().replace(/\s+/g, '_');
+      const val = kv[2].trim();
+      if (key === 'list_id') {
+        result.list_id = val;
+      } else if (key === 'url') {
+        const m = val.match(/\/([A-Za-z0-9]+)\/?\s*$/);
+        if (m && !result.list_id) result.list_id = m[1];
+      } else if (key === 'your_id') {
+        const m = val.match(/^(\S+)\s*(?:\((.+?)\))?/);
+        if (m) {
+          result.visitor_id = m[1];
+          if (m[2]) result.your_name = m[2].trim();
+        }
+      }
+      continue;
+    }
+
+    /* in movies section */
+    const heading = line.match(/^###\s+\d+\.\s+(.+?)(?:\s*\((\d{4})\))?\s*$/);
+    if (heading) {
+      if (current) result.movies.push(current);
+      current = {
+        title: heading[1].trim(),
+        year: heading[2] ? parseInt(heading[2]) : null,
+        tmdb_id: null,
+        comments: {}
+      };
+      continue;
+    }
+
+    if (!current) continue;
+
+    const bullet = line.match(/^-\s+(.+?):\s*(.*)$/);
+    if (!bullet) continue;
+    const key = bullet[1].trim();
+    const val = bullet[2].trim();
+    const lkey = key.toLowerCase();
+
+    if (lkey === 'tmdb') {
+      current.tmdb_id = parseInt(val) || null;
+    } else if (reservedKeys.has(lkey)) {
+      /* added_by / ranks — informational, ignored on apply */
+    } else if (val) {
+      current.comments[key] = val;
+    }
+  }
+
+  if (current) result.movies.push(current);
+  return result;
+}
+
+
+/* ============================================================================
+   applyPasteText(text) — the apply pipeline
+   ============================================================================
+   Handles URL handoff, visitor handoff, additive movie merge, comment filter,
+   and the final bulk rank reset. Safe to call either from the Apply button
+   or from the pendingPaste hook in initApp.
+   ============================================================================ */
+
+async function applyPasteText(text) {
+  const parsed = parseBlob(text);
+  if (!parsed) {
+    alert('Could not parse paste — check the format.');
+    return;
+  }
+
+  /* URL handoff: different list → stash and navigate. */
+  if (parsed.list_id && parsed.list_id !== listId) {
+    sessionStorage.setItem('pendingPaste', text);
+    window.location.href = '/' + parsed.list_id;
+    return;
+  }
+
+  /* Visitor handoff: different ID → ensure it exists, recycle ours if
+     untouched, swap the cookie, reload. pendingPaste carries the blob. */
+  if (parsed.visitor_id && parsed.visitor_id !== visitorId) {
+    const lookup = await fetch(API + '/visitor/' + parsed.visitor_id);
+    if (!lookup.ok) {
+      await fetch(API + '/visitor/' + parsed.visitor_id, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: null, color: randomColor() })
+      });
+    }
+    await fetch(API + '/visitor/' + visitorId, { method: 'DELETE' });  // 403 if we've done anything — fine
+    sessionStorage.setItem('pendingPaste', text);
+    setCookie('wtw_visitor', parsed.visitor_id);
+    window.location.reload();
+    return;
+  }
+
+  /* --- additive apply starts here --- */
+  const myName = parsed.your_name;
+  const skipped = [];
+  const orderedMovieIds = [];
+  let addedOrFound = 0;
+  let commentsSet = 0;
+  let commentsDropped = 0;
+
+  for (const m of parsed.movies) {
+    let tmdb = null;
+
+    if (m.tmdb_id) {
+      const r = await fetch(
+        TMDB_BASE + '/movie/' + m.tmdb_id + '?api_key=' + TMDB_API_KEY
+      );
+      if (r.ok) {
+        const d = await r.json();
+        tmdb = { id: d.id, title: d.title,
+                 year: formatYear(d.release_date), poster: d.poster_path };
+      }
+    } else if (m.title) {
+      const url = TMDB_BASE + '/search/movie'
+        + '?api_key=' + TMDB_API_KEY
+        + '&query=' + encodeURIComponent(m.title)
+        + (m.year ? '&year=' + m.year : '');
+      const r = await fetch(url);
+      const d = await r.json();
+      const q = m.title.toLowerCase();
+      let candidates = (d.results || []).filter(
+        c => c.title && c.title.toLowerCase().includes(q)
+      );
+      if (m.year) {
+        const narrowed = candidates.filter(
+          c => c.release_date && c.release_date.startsWith(String(m.year))
+        );
+        if (narrowed.length) candidates = narrowed;
+      }
+      candidates.sort((a, b) =>
+        (b.popularity || 0) - (a.popularity || 0)
+        || (b.vote_count || 0) - (a.vote_count || 0)
+      );
+      if (candidates.length) {
+        const c = candidates[0];
+        tmdb = { id: c.id, title: c.title,
+                 year: formatYear(c.release_date), poster: c.poster_path };
+      }
+    }
+
+    if (!tmdb) {
+      skipped.push(m.title + (m.year ? ' (' + m.year + ')' : ''));
+      continue;
+    }
+
+    /* POST — server returns the existing row if duplicate (by tmdb_id). */
+    const addResp = await fetch(API + '/list/' + listId + '/movies', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        tmdb_id:    tmdbMovie.id,
-        title:      tmdbMovie.title,
-        year:       formatYear(tmdbMovie.release_date),
-        poster:     tmdbMovie.poster_path,
+        tmdb_id:    tmdb.id,
+        title:      tmdb.title,
+        year:       tmdb.year,
+        poster:     tmdb.poster,
         visitor_id: visitorId
+      })
+    });
+    const row = await addResp.json();
+    if (row && row.id) {
+      orderedMovieIds.push(row.id);
+      addedOrFound++;
+
+      /* apply only the current user's comment */
+      if (myName && m.comments[myName]) {
+        await fetch(API + '/list/' + listId + '/comments', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            movie_id: row.id, visitor_id: visitorId, text: m.comments[myName]
+          })
+        });
+        commentsSet++;
+      }
+      for (const n of Object.keys(m.comments)) {
+        if (n !== myName) commentsDropped++;
+      }
+    }
+  }
+
+  /* Reset the current user's personal ranks to match textarea order. */
+  if (orderedMovieIds.length) {
+    await fetch(API + '/list/' + listId + '/my-ranks', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        visitor_id: visitorId,
+        ordered_movie_ids: orderedMovieIds
       })
     });
   }
 
+  sessionStorage.removeItem('pendingPaste');
   closeCopyPasteModal();
   await loadList();
+
+  const notes = [
+    'Apply complete.',
+    '',
+    'Movies: ' + addedOrFound + ' added or matched',
+    'Comments: ' + commentsSet + ' set, ' + commentsDropped + ' dropped (not yours)',
+    'Skipped: ' + skipped.length
+  ];
+  if (skipped.length) {
+    notes.push('');
+    notes.push('No TMDB match for:');
+    skipped.forEach(s => notes.push('  - ' + s));
+  }
+  alert(notes.join('\n'));
 }
 
 
@@ -1290,6 +1546,69 @@ function setupEventListeners() {
 
   /* --- COPY/PASTE BUTTON --- */
   document.getElementById('copy-paste-btn').addEventListener('click', openCopyPasteModal);
+
+  /* --- HOW-TO BUTTON --- */
+  document.getElementById('how-to-btn').addEventListener('click', openHowToModal);
+}
+
+
+/* ============================================================================
+   SECTION 15b: HOW-TO MODAL — feature cheat-sheet
+   ============================================================================ */
+
+function openHowToModal() {
+  const modal = document.getElementById('how-to-modal');
+  modal.innerHTML = '<div class="modal-content howto-modal">'
+    + '<button class="modal-close">✕</button>'
+    + '<h2>How CouchList works</h2>'
+
+    + '<h3>Adding movies</h3>'
+    + '<p>Type in the search box at the top to find a movie on TMDB. '
+    + 'Click a result to add it to the list.</p>'
+
+    + '<h3>Your tab</h3>'
+    + '<p>Type your name on your tab to join the list. Click the color dot on '
+    + 'your own tab to change your color.</p>'
+
+    + '<h3>Ranking movies</h3>'
+    + '<p>Click any visitor tab to see that person\'s personal ranking. On your '
+    + 'own tab, use the up / down arrows to reorder. Double arrows jump a movie '
+    + 'to the top or bottom.</p>'
+
+    + '<h3>Comments</h3>'
+    + '<p>Tap any comment box on a movie to write or edit your thoughts. Each '
+    + 'person gets one comment per movie.</p>'
+
+    + '<h3>The Couch tab</h3>'
+    + '<p>Shows the group consensus ranking — a Borda count across everyone '
+    + 'marked <strong>RDY</strong>. Toggle <strong>RDY / NAW</strong> on any '
+    + 'tab to include or exclude that person\'s votes.</p>'
+
+    + '<h3>Movie details</h3>'
+    + '<p>Hover (or long-press on phone) a poster or title to see the plot, '
+    + 'director, and cast. Click it to open the TMDB page.</p>'
+
+    + '<h3>Remove a movie</h3>'
+    + '<p>Only the person who added a movie can remove it. The remove button '
+    + 'only shows up on your own additions.</p>'
+
+    + '<h3>Details / sharing</h3>'
+    + '<p>The <strong>Details</strong> button shows this list as an editable '
+    + 'text snapshot. Copy it to share the list, or paste an edited version '
+    + 'and click Apply to merge changes. Your visitor ID lives in that text — '
+    + 'save it somewhere if you want to keep your identity across devices or '
+    + 'after clearing cookies.</p>'
+
+    + '<h3>No accounts, no security</h3>'
+    + '<p>This is a casual site. Your identity is just a random string in a '
+    + 'cookie. Anyone who sees your visitor ID can use it. Don\'t put anything '
+    + 'here you wouldn\'t want strangers to read.</p>'
+    + '</div>';
+
+  modal.style.display = 'flex';
+  modal.querySelector('.modal-close').addEventListener('click', () => {
+    modal.style.display = 'none';
+  });
 }
 
 

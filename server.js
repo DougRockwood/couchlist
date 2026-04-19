@@ -140,6 +140,28 @@ app.put('/api/visitor/:id', (req, res) => {
   res.json({ id: req.params.id, name, color });
 });
 
+/* DELETE /api/visitor/:id — only succeeds if the visitor is "untouched":
+   no name set AND no slot in any list. Used by the Details paste flow when
+   a brand-new visitor adopts an existing ID and we want to recycle the
+   freshly-generated cookie ID rather than leave an orphan visitor row. */
+app.delete('/api/visitor/:id', (req, res) => {
+  const id = req.params.id;
+  const v = db.prepare('SELECT * FROM visitors WHERE id = ?').get(id);
+  if (!v) return res.json({ ok: true, deleted: false });             // already gone
+
+  const hasName = v.name && v.name.trim() !== '';
+  const memberships = db.prepare(
+    'SELECT COUNT(*) as n FROM list_visitors WHERE visitor_id = ?'
+  ).get(id).n;
+
+  if (hasName || memberships > 0) {
+    return res.status(403).json({ error: 'visitor not untouched', deleted: false });
+  }
+
+  db.prepare('DELETE FROM visitors WHERE id = ?').run(id);
+  res.json({ ok: true, deleted: true });
+});
+
 
 /* ============================================================================
    SECTION 5: GET LIST — GET /api/list/:id
@@ -508,6 +530,52 @@ app.put('/api/list/:id/move', (req, res) => {
 
   /* set the movie to its new rank */
   db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(targetRank, movieId);
+
+  res.json({ ok: true });
+});
+
+
+/* ============================================================================
+   SECTION 10c: BULK RANK RESET — PUT /api/list/:id/my-ranks
+   ============================================================================
+   Resets the caller's personal ranking to match a given movie order. Used
+   by the Details paste flow to apply the order of movies in the textarea
+   to the current user's column. Movies present on the list but not in the
+   supplied order are pushed past the ordered ones, keeping their current
+   relative order. Ranks end up contiguous 1..N.
+
+   Body: { visitor_id, ordered_movie_ids: [int, ...] }
+   ============================================================================ */
+
+app.put('/api/list/:id/my-ranks', (req, res) => {
+  const listId = req.params.id;
+  const { visitor_id, ordered_movie_ids } = req.body;
+
+  const slotRow = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+  ).get(listId, visitor_id);
+  if (!slotRow) return res.status(400).json({ error: 'visitor not on this list' });
+
+  const col = 'user' + slotRow.slot + '_rank';
+
+  const allMovies = db.prepare(
+    'SELECT id, ' + col + ' as rank FROM movies WHERE list_id = ?'
+  ).all(listId);
+
+  const orderedSet = new Set(ordered_movie_ids);
+  const tail = allMovies
+    .filter(m => !orderedSet.has(m.id))
+    .sort((a, b) => {
+      if (a.rank == null && b.rank == null) return 0;
+      if (a.rank == null) return 1;
+      if (b.rank == null) return -1;
+      return a.rank - b.rank;
+    });
+
+  const update = db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ? AND list_id = ?');
+  let rank = 1;
+  ordered_movie_ids.forEach(mid => { update.run(rank++, mid, listId); });
+  tail.forEach(m => { update.run(rank++, m.id, listId); });
 
   res.json({ ok: true });
 });

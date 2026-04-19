@@ -161,6 +161,14 @@ async function handleNameEntry(nameText) {
   });
   visitor = await resp.json();
 
+  /* claim a slot on this list so we can comment/rank before adding a movie,
+     and so other visitors see our tab as soon as we have a name */
+  await fetch(API + '/list/' + listId + '/join', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: visitorId })
+  });
+
   hideNameWarning();
   updateSearchArea();
   await loadList();
@@ -239,16 +247,11 @@ async function loadList() {
     if (v.id === visitorId) mySlot = parseInt(slot);
   });
 
-  /* build selectedVisitors — preserve existing toggles, default new visitors ON */
-  const newSelected = {};
+  /* selectedVisitors mirrors server state — v.ready is authoritative */
+  selectedVisitors = {};
   Object.values(listData.visitors).forEach(v => {
-    if (selectedVisitors.hasOwnProperty(v.id)) {
-      newSelected[v.id] = selectedVisitors[v.id];                  // keep existing toggle
-    } else {
-      newSelected[v.id] = true;                                    // new visitor, default ON
-    }
+    selectedVisitors[v.id] = (v.ready !== false);
   });
-  selectedVisitors = newSelected;
 
   buildDisplayNames();
   updateSearchArea();
@@ -806,26 +809,38 @@ function handleTabClick(tabId) {
   activeTab = (tabId === 'couch') ? 'couch' : tabId;
   renderList();
   renderUserTabs();
+  /* opportunistic refresh — any tab click pulls fresh RDY state from server */
+  loadList();
 }
 
-function handleReadyToggle(tabVisitorId) {
+async function handleReadyToggle(tabVisitorId) {
   if (tabVisitorId === 'couch') return;
-  selectedVisitors[tabVisitorId] = !selectedVisitors[tabVisitorId];
+  const newReady = !(selectedVisitors[tabVisitorId] !== false);
+  selectedVisitors[tabVisitorId] = newReady;
 
   /* surgical DOM update — preserves focus in any open name input */
   const tabEl = document.querySelector('.tab[data-tab="' + tabVisitorId + '"]');
   if (tabEl) {
-    const isSelected = selectedVisitors[tabVisitorId] !== false;
-    tabEl.classList.toggle('tab-dimmed', !isSelected);
+    tabEl.classList.toggle('tab-dimmed', !newReady);
     const btn = tabEl.querySelector('.tab-ready-btn');
     if (btn) {
-      btn.classList.toggle('ready', isSelected);
-      btn.classList.toggle('not-ready', !isSelected);
-      btn.textContent = isSelected ? 'RDY' : 'NAW';
+      btn.classList.toggle('ready', newReady);
+      btn.classList.toggle('not-ready', !newReady);
+      btn.textContent = newReady ? 'RDY' : 'NAW';
     }
   }
 
   if (activeTab === 'couch') renderList();
+
+  /* persist to server, then reload so every viewer converges */
+  try {
+    await fetch(API + '/list/' + listId + '/ready', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visitor_id: tabVisitorId, ready: newReady })
+    });
+  } catch (e) { /* optimistic update stays even if network fails */ }
+  loadList();
 }
 
 
@@ -1582,7 +1597,8 @@ function openHowToModal() {
     + '<h3>The Couch tab</h3>'
     + '<p>Shows the group consensus ranking — a Borda count across everyone '
     + 'marked <strong>RDY</strong>. Toggle <strong>RDY / NAW</strong> on any '
-    + 'tab to include or exclude that person\'s votes.</p>'
+    + 'tab to include or exclude that person\'s votes. RDY state is shared — '
+    + 'everyone viewing the list sees the same toggles.</p>'
 
     + '<h3>Movie details</h3>'
     + '<p>Hover (or long-press on phone) a poster or title to see the plot, '

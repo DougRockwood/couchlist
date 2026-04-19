@@ -86,6 +86,7 @@ db.exec(`
     list_id    TEXT,
     slot       INTEGER CHECK(slot BETWEEN 1 AND 10),
     visitor_id TEXT,
+    ready      INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY(list_id, slot),
     UNIQUE(list_id, visitor_id)
   );
@@ -110,6 +111,14 @@ db.exec(`
     user10_rank INTEGER, user10_comment TEXT
   );
 `);
+
+/* migration: add `ready` column to existing list_visitors tables that predate it.
+   SQLite throws if the column already exists — swallow that one case. */
+try {
+  db.exec('ALTER TABLE list_visitors ADD COLUMN ready INTEGER NOT NULL DEFAULT 1');
+} catch (e) {
+  if (!/duplicate column/i.test(e.message)) throw e;
+}
 
 
 /* ============================================================================
@@ -197,7 +206,10 @@ app.get('/api/list/:id', (req, res) => {
   slots.forEach(s => {
     const v = db.prepare('SELECT * FROM visitors WHERE id = ?').get(s.visitor_id);
     if (v) {
-      visitors[s.slot] = { id: v.id, name: v.name, color: v.color, slot: s.slot };
+      visitors[s.slot] = {
+        id: v.id, name: v.name, color: v.color, slot: s.slot,
+        ready: s.ready !== 0
+      };
     }
   });
 
@@ -224,6 +236,14 @@ app.get('/api/list/:id', (req, res) => {
 app.post('/api/list/:id/join', (req, res) => {
   const listId = req.params.id;
   const { visitor_id } = req.body;
+
+  /* create the list if it doesn't exist yet — so the first visitor to set
+     their name on a brand-new URL becomes visible via GET /api/list/:id */
+  const existingList = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
+  if (!existingList) {
+    db.prepare('INSERT INTO lists (id, created) VALUES (?, ?)')
+      .run(listId, new Date().toISOString().split('T')[0]);
+  }
 
   /* check if this visitor already has a slot on this list */
   const existing = db.prepare(
@@ -576,6 +596,33 @@ app.put('/api/list/:id/my-ranks', (req, res) => {
   let rank = 1;
   ordered_movie_ids.forEach(mid => { update.run(rank++, mid, listId); });
   tail.forEach(m => { update.run(rank++, m.id, listId); });
+
+  res.json({ ok: true });
+});
+
+
+/* ============================================================================
+   SECTION 10d: SET READY — PUT /api/list/:id/ready
+   ============================================================================
+   Sets a visitor's RDY/NAW flag on this list. The flag lives in list_visitors
+   so everyone viewing the list sees the same state. The Couch tab's Borda
+   count only includes slots whose ready = 1.
+
+   Body: { visitor_id, ready }   (ready is truthy/falsy)
+   ============================================================================ */
+
+app.put('/api/list/:id/ready', (req, res) => {
+  const listId = req.params.id;
+  const { visitor_id, ready } = req.body;
+
+  const slotRow = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+  ).get(listId, visitor_id);
+  if (!slotRow) return res.status(400).json({ error: 'visitor not on this list' });
+
+  db.prepare(
+    'UPDATE list_visitors SET ready = ? WHERE list_id = ? AND visitor_id = ?'
+  ).run(ready ? 1 : 0, listId, visitor_id);
 
   res.json({ ok: true });
 });

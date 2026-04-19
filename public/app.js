@@ -570,7 +570,7 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
 
   /* if we haven't commented yet, show an empty box with our name */
   if (visitor && !myCommentExists) {
-    commentsHtml += '<div class="comment-box comment-empty" '
+    commentsHtml += '<div class="comment-box" '
       + 'data-movie-id="' + movie.id + '" '
       + 'data-visitor-id="' + visitorId + '" '
       + 'style="color: ' + escapeHtml(visitor.color) + '">'

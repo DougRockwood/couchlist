@@ -468,11 +468,6 @@ html, body {
   border: 1px solid #2a2a4a;
 }
 
-.comment-empty {
-  opacity: 0.5;
-  border-style: dashed;
-}
-
 /* --- Comment expanded state ---
    When you tap a comment, it grows to ~2/3 screen height.
    If it's yours, a textarea + Done button appear inside.

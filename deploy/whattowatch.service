@@ -25,11 +25,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root                                            # simplest path; hardens later with a dedicated user
-WorkingDirectory=/opt/WhatToWatch                    # so relative paths in server.js resolve correctly
-ExecStart=/usr/bin/node /opt/WhatToWatch/server.js   # absolute node path — don't rely on $PATH at boot
-Environment=NODE_ENV=production                      # tells express to skip dev-only logging
-Environment=PORT=3000                                 # server.js reads process.env.PORT
+# Run as root for now — simplest path; harden later with a dedicated user.
+User=root
+# WorkingDirectory so relative paths in server.js resolve correctly.
+WorkingDirectory=/opt/WhatToWatch
+# Absolute node path — don't rely on $PATH at boot.
+ExecStart=/usr/bin/node /opt/WhatToWatch/server.js
+# NODE_ENV=production tells express to skip dev-only logging.
+Environment=NODE_ENV=production
+# server.js reads process.env.PORT.
+Environment=PORT=3000
 
 # Restart behavior — if node crashes, come back up in 10 seconds.
 Restart=always

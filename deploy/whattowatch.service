@@ -1,0 +1,45 @@
+# whattowatch.service — keep the Node server running for couchlist.org.
+#
+# This is a systemd "unit file." systemd is Linux's built-in service
+# manager — the same thing that starts sshd, cron, nginx, etc. at boot.
+# Once this unit is installed and enabled, Linux treats our Node app
+# exactly like any other system service: starts it on boot, restarts it
+# if it crashes, and collects its logs via journalctl.
+#
+# Install (one-time, run as root on the droplet):
+#   cp /opt/WhatToWatch/deploy/whattowatch.service /etc/systemd/system/
+#   systemctl daemon-reload                         # re-scan unit files
+#   systemctl enable --now whattowatch.service      # start + start-on-boot
+#
+# Inspect:
+#   systemctl status whattowatch              # is it running? last logs?
+#   journalctl -u whattowatch -f              # live stream of stdout/err
+#   journalctl -u whattowatch --since today   # today's log history
+
+[Unit]
+Description=WhatToWatch — couchlist.org Node server
+# Wait for the network to be fully up before starting. Without this,
+# the service can race the network and fail on boot.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root                                            # simplest path; hardens later with a dedicated user
+WorkingDirectory=/opt/WhatToWatch                    # so relative paths in server.js resolve correctly
+ExecStart=/usr/bin/node /opt/WhatToWatch/server.js   # absolute node path — don't rely on $PATH at boot
+Environment=NODE_ENV=production                      # tells express to skip dev-only logging
+Environment=PORT=3000                                 # server.js reads process.env.PORT
+
+# Restart behavior — if node crashes, come back up in 10 seconds.
+Restart=always
+RestartSec=10
+# No throttle during early days — if it flaps, journalctl will show why.
+StartLimitIntervalSec=0
+
+# Send stdout/stderr to the systemd journal so journalctl captures them.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

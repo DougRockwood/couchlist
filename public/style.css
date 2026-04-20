@@ -154,6 +154,19 @@ html, body {
   flex-shrink: 0;
 }
 
+/* small pill shown next to TV results in the search dropdown */
+.tv-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  font-size: 0.7em;
+  font-weight: bold;
+  background: #4a6a8a;
+  color: #fff;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
 
 /* ============================================================================
    SECTION 4: TAB BAR

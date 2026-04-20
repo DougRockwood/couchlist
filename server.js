@@ -95,6 +95,7 @@ db.exec(`
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     list_id    TEXT,
     tmdb_id    INTEGER,
+    media_type TEXT NOT NULL DEFAULT 'movie',   -- 'movie' or 'tv'; TV shows are treated like movies everywhere else
     title      TEXT,
     year       INTEGER,
     poster     TEXT,
@@ -116,6 +117,14 @@ db.exec(`
    SQLite throws if the column already exists — swallow that one case. */
 try {
   db.exec('ALTER TABLE list_visitors ADD COLUMN ready INTEGER NOT NULL DEFAULT 1');
+} catch (e) {
+  if (!/duplicate column/i.test(e.message)) throw e;
+}
+
+/* migration: add `media_type` column to existing movies tables. Existing rows
+   default to 'movie' (what we used to assume); new rows carry 'movie' or 'tv'. */
+try {
+  db.exec("ALTER TABLE movies ADD COLUMN media_type TEXT NOT NULL DEFAULT 'movie'");
 } catch (e) {
   if (!/duplicate column/i.test(e.message)) throw e;
 }
@@ -318,7 +327,8 @@ app.get('/api/list/:id/check-name/:name', (req, res) => {
    ============================================================================
    Adds a movie to a list. Creates the list if it doesn't exist yet.
 
-   Body: { tmdb_id, title, year, poster, visitor_id }
+   Body: { tmdb_id, media_type, title, year, poster, visitor_id }
+     media_type is 'movie' or 'tv'; defaults to 'movie' so older clients keep working.
 
    After inserting the movie:
    1. If the visitor doesn't have a slot yet, auto-join them (next open slot).
@@ -332,6 +342,8 @@ app.get('/api/list/:id/check-name/:name', (req, res) => {
 app.post('/api/list/:id/movies', (req, res) => {
   const listId = req.params.id;
   const { tmdb_id, title, year, poster, visitor_id } = req.body;
+  /* TMDB uses separate ID spaces for movies and TV, so we key duplicates on both. */
+  const mediaType = req.body.media_type === 'tv' ? 'tv' : 'movie';
 
   /* create the list if it doesn't exist yet */
   const existingList = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
@@ -340,9 +352,10 @@ app.post('/api/list/:id/movies', (req, res) => {
       .run(listId, new Date().toISOString().split('T')[0]);
   }
 
-  /* check for duplicate — same TMDB movie already on this list */
-  const existing = db.prepare('SELECT * FROM movies WHERE list_id = ? AND tmdb_id = ?')
-    .get(listId, tmdb_id);
+  /* check for duplicate — same TMDB item already on this list (id+type) */
+  const existing = db.prepare(
+    'SELECT * FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
+  ).get(listId, tmdb_id, mediaType);
   if (existing) return res.json(existing);
 
   /* auto-join: if this visitor has no slot, assign one now */
@@ -379,8 +392,8 @@ app.post('/api/list/:id/movies', (req, res) => {
 
   /* insert the new movie */
   const result = db.prepare(
-    'INSERT INTO movies (list_id, tmdb_id, title, year, poster, added_by) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(listId, tmdb_id, title, year, poster, visitor_id);
+    'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(listId, tmdb_id, mediaType, title, year, poster, visitor_id);
   const newMovieId = result.lastInsertRowid;
 
   /* count total movies now (including the one we just added) — this is the

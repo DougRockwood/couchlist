@@ -314,8 +314,13 @@ function buildDisplayNames() {
 /* ============================================================================
    SECTION 6: TMDB SEARCH
    ============================================================================
-   Search box → TMDB API → dropdown results → click to add movie.
-   Unchanged from v1 except the server now auto-assigns ranks on add.
+   Search box → TMDB /search/multi → dropdown results → click to add.
+   TV shows and movies are treated the same end-to-end: TV results get
+   normalized (name → title, first_air_date → release_date) before being
+   stored in searchResults, so every downstream renderer keeps working.
+   The only piece that still needs to know the difference is the popup,
+   which has to hit /movie/:id vs /tv/:id — so we stash media_type on each
+   result and forward it to the server on add.
    ============================================================================ */
 
 const debouncedSearch = debounce(handleSearchInput, DEBOUNCE_MS);
@@ -329,14 +334,31 @@ function handleSearchInput(queryText) {
   searchTMDB(queryText);
 }
 
+/* Take a raw TMDB /search/multi hit and return the shape the rest of the UI
+   expects: { id, media_type, title, release_date, poster_path, ...raw }.
+   TV entries use `name` and `first_air_date`; we copy those into the movie-
+   shaped fields so renderers don't have to branch. */
+function normalizeTmdbResult(r) {
+  if (r.media_type === 'tv') {
+    return Object.assign({}, r, {
+      title:        r.name,
+      release_date: r.first_air_date,
+    });
+  }
+  return r;
+}
+
 async function searchTMDB(query) {
-  const url = TMDB_BASE + '/search/movie'
+  const url = TMDB_BASE + '/search/multi'
     + '?api_key=' + TMDB_API_KEY
     + '&query=' + encodeURIComponent(query);
 
   const resp = await fetch(url);
   const data = await resp.json();
-  searchResults = data.results.slice(0, 8);
+  searchResults = (data.results || [])
+    .filter(r => r.media_type === 'movie' || r.media_type === 'tv')
+    .map(normalizeTmdbResult)
+    .slice(0, 8);
   renderSearchResults();
 }
 
@@ -355,9 +377,12 @@ function renderSearchResults() {
     const posterThumb = movie.poster_path
       ? TMDB_IMG + 'w45' + movie.poster_path
       : '';
-    return '<div class="search-result" data-tmdb-id="' + movie.id + '">'
+    /* tiny TV badge so users can tell a show from a same-named movie */
+    const tvBadge = movie.media_type === 'tv' ? ' <span class="tv-badge">TV</span>' : '';
+    return '<div class="search-result" data-tmdb-id="' + movie.id
+         + '" data-media-type="' + movie.media_type + '">'
       + (posterThumb ? '<img src="' + posterThumb + '" class="search-thumb">' : '')
-      + '<span>' + escapeHtml(movie.title) + ' (' + year + ')</span>'
+      + '<span>' + escapeHtml(movie.title) + ' (' + year + ')' + tvBadge + '</span>'
       + '</div>';
   }).join('');
 }
@@ -375,6 +400,7 @@ async function addMovie(tmdbMovie) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       tmdb_id:    tmdbMovie.id,
+      media_type: tmdbMovie.media_type || 'movie',
       title:      tmdbMovie.title,
       year:       year,
       poster:     tmdbMovie.poster_path,
@@ -534,16 +560,19 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
       + '</div>';
   }
 
-  /* 2. POSTER THUMBNAIL */
+  /* 2. POSTER THUMBNAIL — media_type rides along so popup/link can hit the right TMDB endpoint */
   const posterUrl = movie.poster
     ? TMDB_IMG + 'w92' + movie.poster
     : '';
-  const posterHtml = '<div class="entry-poster" data-tmdb-id="' + movie.tmdb_id + '">'
+  const mediaType = movie.media_type || 'movie';
+  const posterHtml = '<div class="entry-poster" data-tmdb-id="' + movie.tmdb_id
+    + '" data-media-type="' + mediaType + '">'
     + (posterUrl ? '<img src="' + posterUrl + '">' : '<div class="no-poster">?</div>')
     + '</div>';
 
   /* 3. TITLE */
-  const titleHtml = '<div class="entry-title" data-tmdb-id="' + movie.tmdb_id + '">'
+  const titleHtml = '<div class="entry-title" data-tmdb-id="' + movie.tmdb_id
+    + '" data-media-type="' + mediaType + '">'
     + escapeHtml(movie.title) + ' (' + movie.year + ')'
     + '</div>';
 
@@ -851,18 +880,35 @@ async function handleReadyToggle(tabVisitorId) {
    cast, and summary from TMDB. Cached after first fetch.
    ============================================================================ */
 
-async function showMoviePopup(tmdbId, anchorEl) {
-  if (!movieDetailCache[tmdbId]) {
-    const url = TMDB_BASE + '/movie/' + tmdbId
+async function showMoviePopup(tmdbId, mediaType, anchorEl) {
+  /* TMDB movie and TV ID spaces overlap, so cache key must include media_type */
+  const cacheKey = mediaType + ':' + tmdbId;
+  if (!movieDetailCache[cacheKey]) {
+    const url = TMDB_BASE + '/' + mediaType + '/' + tmdbId
       + '?api_key=' + TMDB_API_KEY
       + '&append_to_response=credits';
     const resp = await fetch(url);
-    movieDetailCache[tmdbId] = await resp.json();
+    movieDetailCache[cacheKey] = await resp.json();
   }
 
-  const detail = movieDetailCache[tmdbId];
-  const director = detail.credits.crew.find(p => p.job === 'Director');
-  const directorName = director ? director.name : 'Unknown';
+  const detail = movieDetailCache[cacheKey];
+
+  /* TV shows use `name`/`first_air_date` and list showrunners in `created_by`
+     (not in credits.crew as "Director"). Fold both shapes into one. */
+  const titleText = detail.title || detail.name || '';
+  const dateText  = detail.release_date || detail.first_air_date || '';
+
+  let leadLabel, leadName;
+  if (mediaType === 'tv') {
+    leadLabel = (detail.created_by && detail.created_by.length > 1) ? 'Creators' : 'Creator';
+    leadName  = (detail.created_by && detail.created_by.length)
+      ? detail.created_by.map(p => p.name).join(', ')
+      : 'Unknown';
+  } else {
+    const director = detail.credits.crew.find(p => p.job === 'Director');
+    leadLabel = 'Director';
+    leadName  = director ? director.name : 'Unknown';
+  }
   const topCast = detail.credits.cast.slice(0, 5).map(p => p.name);
 
   const popup = document.getElementById('movie-popup');
@@ -873,8 +919,8 @@ async function showMoviePopup(tmdbId, anchorEl) {
   popup.innerHTML = '<div class="popup-content">'
     + (posterUrl ? '<img src="' + posterUrl + '" class="popup-poster">' : '')
     + '<div class="popup-info">'
-    + '<h3>' + escapeHtml(detail.title) + ' (' + formatYear(detail.release_date) + ')</h3>'
-    + '<p><strong>Director:</strong> ' + escapeHtml(directorName) + '</p>'
+    + '<h3>' + escapeHtml(titleText) + ' (' + formatYear(dateText) + ')</h3>'
+    + '<p><strong>' + leadLabel + ':</strong> ' + escapeHtml(leadName) + '</p>'
     + '<p><strong>Cast:</strong> ' + escapeHtml(topCast.join(', ')) + '</p>'
     + '<p>' + escapeHtml(detail.overview || 'No summary available.') + '</p>'
     + '</div></div>';
@@ -1031,6 +1077,10 @@ function buildBlob(visitorById) {
   movies.forEach((m, i) => {
     lines.push('### ' + (i + 1) + '. ' + m.title + ' (' + m.year + ')');
     lines.push('- tmdb:     ' + m.tmdb_id);
+    /* only emit `media:` for TV rows — keeps movie snapshots byte-identical to the old format */
+    if (m.media_type && m.media_type !== 'movie') {
+      lines.push('- media:    ' + m.media_type);
+    }
     const adder = visitorById[m.added_by];
     lines.push('- added_by: ' + (adder ? (adder.name || '?') : '?'));
 
@@ -1077,7 +1127,7 @@ function parseBlob(text) {
   let inMovies = false;
   let current = null;
 
-  const reservedKeys = new Set(['tmdb', 'added_by', 'ranks']);
+  const reservedKeys = new Set(['tmdb', 'media', 'added_by', 'ranks']);
 
   for (const raw of lines) {
     const line = raw.trim();
@@ -1115,6 +1165,7 @@ function parseBlob(text) {
         title: heading[1].trim(),
         year: heading[2] ? parseInt(heading[2]) : null,
         tmdb_id: null,
+        media_type: 'movie',   /* default — snapshots from before TV support won't have this line */
         comments: {}
       };
       continue;
@@ -1130,6 +1181,8 @@ function parseBlob(text) {
 
     if (lkey === 'tmdb') {
       current.tmdb_id = parseInt(val) || null;
+    } else if (lkey === 'media') {
+      current.media_type = (val === 'tv') ? 'tv' : 'movie';
     } else if (reservedKeys.has(lkey)) {
       /* added_by / ranks — informational, ignored on apply */
     } else if (val) {
@@ -1192,27 +1245,31 @@ async function applyPasteText(text) {
 
   for (const m of parsed.movies) {
     let tmdb = null;
+    const mt = m.media_type === 'tv' ? 'tv' : 'movie';   /* from the snapshot; default 'movie' */
 
     if (m.tmdb_id) {
       const r = await fetch(
-        TMDB_BASE + '/movie/' + m.tmdb_id + '?api_key=' + TMDB_API_KEY
+        TMDB_BASE + '/' + mt + '/' + m.tmdb_id + '?api_key=' + TMDB_API_KEY
       );
       if (r.ok) {
         const d = await r.json();
-        tmdb = { id: d.id, title: d.title,
-                 year: formatYear(d.release_date), poster: d.poster_path };
+        const title = d.title || d.name;
+        const date  = d.release_date || d.first_air_date;
+        tmdb = { id: d.id, media_type: mt, title: title,
+                 year: formatYear(date), poster: d.poster_path };
       }
     } else if (m.title) {
-      const url = TMDB_BASE + '/search/movie'
+      /* search /multi so legacy snapshots without media: lines still resolve TV titles */
+      const url = TMDB_BASE + '/search/multi'
         + '?api_key=' + TMDB_API_KEY
-        + '&query=' + encodeURIComponent(m.title)
-        + (m.year ? '&year=' + m.year : '');
+        + '&query=' + encodeURIComponent(m.title);
       const r = await fetch(url);
       const d = await r.json();
       const q = m.title.toLowerCase();
-      let candidates = (d.results || []).filter(
-        c => c.title && c.title.toLowerCase().includes(q)
-      );
+      let candidates = (d.results || [])
+        .filter(c => c.media_type === 'movie' || c.media_type === 'tv')
+        .map(normalizeTmdbResult)
+        .filter(c => c.title && c.title.toLowerCase().includes(q));
       if (m.year) {
         const narrowed = candidates.filter(
           c => c.release_date && c.release_date.startsWith(String(m.year))
@@ -1225,7 +1282,7 @@ async function applyPasteText(text) {
       );
       if (candidates.length) {
         const c = candidates[0];
-        tmdb = { id: c.id, title: c.title,
+        tmdb = { id: c.id, media_type: c.media_type, title: c.title,
                  year: formatYear(c.release_date), poster: c.poster_path };
       }
     }
@@ -1235,12 +1292,13 @@ async function applyPasteText(text) {
       continue;
     }
 
-    /* POST — server returns the existing row if duplicate (by tmdb_id). */
+    /* POST — server dedupes by (list_id, tmdb_id, media_type). */
     const addResp = await fetch(API + '/list/' + listId + '/movies', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         tmdb_id:    tmdb.id,
+        media_type: tmdb.media_type || 'movie',
         title:      tmdb.title,
         year:       tmdb.year,
         poster:     tmdb.poster,
@@ -1387,12 +1445,14 @@ function setupEventListeners() {
     debouncedSearch(e.target.value);
   });
 
-  /* --- SEARCH RESULTS: click to add --- */
+  /* --- SEARCH RESULTS: click to add.
+         TMDB movie and TV ID spaces overlap, so match on (id, media_type). --- */
   document.getElementById('search-results').addEventListener('click', e => {
     const resultEl = e.target.closest('.search-result');
     if (!resultEl) return;
     const tmdbId = parseInt(resultEl.dataset.tmdbId);
-    const movie = searchResults.find(m => m.id === tmdbId);
+    const mediaType = resultEl.dataset.mediaType || 'movie';
+    const movie = searchResults.find(m => m.id === tmdbId && m.media_type === mediaType);
     if (movie) addMovie(movie);
   });
 
@@ -1501,10 +1561,11 @@ function setupEventListeners() {
       return;
     }
 
-    /* POSTER or TITLE — open TMDB page */
+    /* POSTER or TITLE — open TMDB page (movie or tv) */
     const el = e.target.closest('.entry-poster, .entry-title');
     if (el) {
-      window.open('https://www.themoviedb.org/movie/' + el.dataset.tmdbId, '_blank');
+      const mt = el.dataset.mediaType || 'movie';
+      window.open('https://www.themoviedb.org/' + mt + '/' + el.dataset.tmdbId, '_blank');
       return;
     }
 
@@ -1529,7 +1590,7 @@ function setupEventListeners() {
   /* hover on poster or title → show popup (desktop) */
   movieList.addEventListener('mouseenter', e => {
     const el = e.target.closest('.entry-poster, .entry-title');
-    if (el) showMoviePopup(parseInt(el.dataset.tmdbId), el);
+    if (el) showMoviePopup(parseInt(el.dataset.tmdbId), el.dataset.mediaType || 'movie', el);
   }, true);
 
   movieList.addEventListener('mouseleave', e => {

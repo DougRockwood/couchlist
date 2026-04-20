@@ -42,8 +42,8 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 16px;
   line-height: 1.4;
-  background: #1a1a2e;
-  color: #e0e0e0;
+  background: #ffffff;
+  color: #222;
   overflow-x: hidden;
   -webkit-tap-highlight-color: transparent;
 }
@@ -79,7 +79,7 @@ html, body {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: #1a1a2e;
+  background: #ffffff;
   padding: 12px 12px 0;
 }
 
@@ -87,10 +87,10 @@ html, body {
   width: 100%;
   padding: 10px 14px;
   font-size: 16px;
-  border: 1px solid #444;
+  border: 1px solid #bbb;
   border-radius: 8px;
-  background: #16213e;
-  color: #e0e0e0;
+  background: #ffffff;
+  color: #222;
   outline: none;
 }
 
@@ -106,7 +106,7 @@ html, body {
 }
 
 #search-box::placeholder {
-  color: #777;
+  color: #999;
 }
 
 /* --- Search Results Dropdown ---
@@ -119,8 +119,8 @@ html, body {
   top: 100%;
   left: 12px;
   right: 12px;
-  background: #16213e;
-  border: 1px solid #444;
+  background: #ffffff;
+  border: 1px solid #bbb;
   border-top: none;
   border-radius: 0 0 8px 8px;
   max-height: 320px;
@@ -135,7 +135,7 @@ html, body {
   gap: 10px;
   padding: 8px 12px;
   cursor: pointer;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid #e0e0e0;
 }
 
 .search-result:last-child {
@@ -143,7 +143,7 @@ html, body {
 }
 
 .search-result:hover {
-  background: #2a2a4a;
+  background: #f0f0f0;
 }
 
 .search-thumb {
@@ -204,8 +204,8 @@ html, body {
   gap: 6px;
   padding: 3px;
   border-radius: 17px;
-  background: #2a2a4a;
-  color: #ccc;
+  background: #e6e6e6;
+  color: #333;
   font-size: 14px;
   cursor: pointer;
   user-select: none;
@@ -215,7 +215,7 @@ html, body {
 
 .tab-couch {
   padding: 0 16px;
-  color: #ccc;
+  color: #333;
 }
 
 .tab-user {
@@ -224,7 +224,7 @@ html, body {
 }
 
 .tab-active {
-  box-shadow: 0 0 0 2px #1a1a2e, 0 0 0 4px #e94560;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #0000ee;
 }
 
 .tab-dimmed {
@@ -306,19 +306,19 @@ html, body {
 
 /* Brand-new visitor tab: no color / buttons yet, just the name entry. */
 .tab-new {
-  background: #16213e;
+  background: #ffffff;
   padding: 3px 10px;
-  border: 1px solid #444;
+  border: 1px solid #bbb;
 }
 
 .tab-new .tab-name-input {
-  color: #e0e0e0;
+  color: #222;
   text-shadow: none;
   width: 140px;
 }
 
 .tab-new .tab-name-input::placeholder {
-  color: #777;
+  color: #999;
 }
 
 #name-warning {
@@ -355,7 +355,7 @@ html, body {
   align-items: flex-start;
   gap: 8px;
   padding: 8px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid #ccc;
   position: relative;
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
@@ -381,7 +381,7 @@ html, body {
 .rank-number {
   font-size: 32px;
   font-weight: bold;
-  color: #e94560;
+  color: #0000ee;
   min-width: 34px;
   text-align: center;
 }
@@ -395,7 +395,7 @@ html, body {
 }
 
 .arrow-up, .arrow-down, .arrow-top, .arrow-bottom {
-  font-size: 14px;
+  font-size: 28px;
   color: #666;
   cursor: pointer;
   user-select: none;
@@ -439,7 +439,7 @@ html, body {
 .no-poster {
   width: 46px;
   height: 69px;
-  background: #2a2a4a;
+  background: #eee;
   border-radius: 4px;
   display: flex;
   align-items: center;
@@ -456,6 +456,7 @@ html, body {
   padding-top: 4px;
   cursor: pointer;
   min-width: 0;
+  color: #0000ee;
 }
 
 /* --- Comment boxes --- */
@@ -471,14 +472,14 @@ html, body {
 .comment-box {
   font-size: 12px;
   padding: 4px 6px;
-  background: #16213e;
+  background: #f7f7f7;
   border-radius: 6px;
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
-  border: 1px solid #2a2a4a;
+  border: 1px solid #ccc;
 }
 
 /* --- Comment expanded state ---
@@ -507,7 +508,7 @@ html, body {
   white-space: normal;
   overflow-y: auto;
   z-index: 200;
-  background: #16213e;
+  background: #ffffff;
   border: 2px solid #e94560;
   border-radius: 10px;
   padding: 16px;
@@ -520,10 +521,10 @@ html, body {
   width: 100%;
   font-size: 18px;
   padding: 8px;
-  border: 1px solid #444;
+  border: 1px solid #bbb;
   border-radius: 6px;
-  background: #1a1a2e;
-  color: #e0e0e0;
+  background: #ffffff;
+  color: #222;
   resize: none;
   margin-top: 8px;
   font-family: inherit;
@@ -578,9 +579,9 @@ html, body {
   bottom: 16px;
   left: 16px;
   padding: 8px 16px;
-  background: #2a2a4a;
-  color: #ccc;
-  border: 1px solid #444;
+  background: #f0f0f0;
+  color: #333;
+  border: 1px solid #bbb;
   border-radius: 8px;
   font-size: 13px;
   cursor: pointer;
@@ -588,7 +589,7 @@ html, body {
 }
 
 #copy-paste-btn:hover {
-  background: #3a3a5a;
+  background: #e0e0e0;
 }
 
 #copy-paste-modal {
@@ -604,7 +605,7 @@ html, body {
 }
 
 .modal-content {
-  background: #16213e;
+  background: #ffffff;
   border-radius: 12px;
   padding: 20px;
   max-width: 500px;
@@ -638,10 +639,10 @@ html, body {
   width: 100%;
   padding: 8px 10px;
   font-size: 13px;
-  border: 1px solid #444;
+  border: 1px solid #bbb;
   border-radius: 6px;
-  background: #1a1a2e;
-  color: #e0e0e0;
+  background: #ffffff;
+  color: #222;
   font-family: inherit;
 }
 
@@ -674,7 +675,7 @@ html, body {
 
 .modal-welcome {
   font-size: 12px;
-  color: #bbb;
+  color: #555;
   line-height: 1.45;
   margin-bottom: 12px;
 }
@@ -689,9 +690,9 @@ html, body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.45;
-  color: #e0e0e0;
-  background: #1a1a2e;
-  border: 1px solid #444;
+  color: #222;
+  background: #ffffff;
+  border: 1px solid #bbb;
   border-radius: 6px;
   resize: vertical;
   white-space: pre;
@@ -729,16 +730,16 @@ html, body {
   bottom: 16px;
   right: 16px;
   padding: 8px 16px;
-  background: #2a2a4a;
-  color: #ccc;
-  border: 1px solid #444;
+  background: #f0f0f0;
+  color: #333;
+  border: 1px solid #bbb;
   border-radius: 8px;
   font-size: 13px;
   cursor: pointer;
   z-index: 90;
 }
 
-#how-to-btn:hover { background: #3a3a5a; }
+#how-to-btn:hover { background: #e0e0e0; }
 
 #how-to-modal {
   display: none;
@@ -771,11 +772,11 @@ html, body {
 
 .howto-modal p {
   font-size: 13px;
-  color: #d0d0d0;
+  color: #333;
   margin: 0 0 4px 0;
 }
 
-.howto-modal strong { color: #fff; }
+.howto-modal strong { color: #000; }
 
 
 /* ============================================================================
@@ -790,10 +791,10 @@ html, body {
   display: none;
   position: absolute;
   z-index: 250;
-  background: #16213e;
-  border: 1px solid #444;
+  background: #ffffff;
+  border: 1px solid #bbb;
   border-radius: 10px;
-  box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+  box-shadow: 0 8px 30px rgba(0,0,0,0.35);
   max-width: 400px;
   overflow: hidden;
 }
@@ -819,12 +820,12 @@ html, body {
 .popup-info h3 {
   font-size: 15px;
   margin-bottom: 6px;
-  color: #fff;
+  color: #222;
 }
 
 .popup-info p {
   font-size: 12px;
-  color: #bbb;
+  color: #555;
   margin-bottom: 6px;
 }
 

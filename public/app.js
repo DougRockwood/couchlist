@@ -102,7 +102,7 @@ function initApp() {
   }).then(() => {
     setupEventListeners();
     console.log('app.js BUILD details-paste');
-    document.title = 'WTW';
+    document.title = 'CouchList';
 
     /* pendingPaste hook: if a previous Apply redirected us here (either for
        a URL swap or a visitor swap), run the blob now that we're on the
@@ -1608,8 +1608,8 @@ function openHowToModal() {
     + '<p>Only the person who added a movie can remove it. The remove button '
     + 'only shows up on your own additions.</p>'
 
-    + '<h3>Details / sharing</h3>'
-    + '<p>The <strong>Details</strong> button shows this list as an editable '
+    + '<h3>Info / sharing</h3>'
+    + '<p>The <strong>INFO</strong> button shows this list as an editable '
     + 'text snapshot. Copy it to share the list, or paste an edited version '
     + 'and click Apply to merge changes. Your visitor ID lives in that text — '
     + 'save it somewhere if you want to keep your identity across devices or '

@@ -18,18 +18,18 @@ node server.js                    # runs on http://localhost:3000 (or $PORT)
 There are no tests, no linter, no build step. To exercise a change, hit `http://<host>:3000/<any-8-chars>` — that path becomes the list ID.
 
 Session helpers (for Doug's workflow, not CI):
-- `./pull.sh` — syncs `/opt/WhatToWatch` and `/root/.claude` from `origin/main`
+- `./pull.sh` — syncs `/root/projects/couchlist` and `/root/.claude` from `origin/main`
 - `./push.sh` — commits + pushes both repos, prompts for a message
 
 ## Deploy
 
-Production is a DigitalOcean droplet (`64.23.204.231`, root) running the code from `/opt/WhatToWatch` under systemd as `whattowatch.service` on port 3000. Nginx / HTTPS / domain are TODO (Phase 2 in `deploy/INSTALL.md`).
+Production is a DigitalOcean droplet (`64.23.204.231`, root) running the code from `/root/projects/couchlist` under systemd as `couchlist.service` on port 3000. Nginx reverse-proxies `couchlist.org` → `:3000` (see `operations/nginx.md` in `linux-learning`).
 
 Ongoing deploys are one command on the droplet:
 ```bash
-bash /opt/WhatToWatch/deploy/deploy.sh
+bash /root/projects/couchlist/deploy/deploy.sh
 ```
-It's idempotent: fetches, skips if no new commits, runs `npm install` only if `package*.json` changed, then `systemctl restart whattowatch`. First-time setup (installing the unit file, clearing port 3000) is in `deploy/INSTALL.md`.
+It's idempotent: fetches, skips if no new commits, runs `npm install` only if `package*.json` changed, then `systemctl restart couchlist`. First-time setup (installing the unit file, clearing port 3000) is in `deploy/INSTALL.md`.
 
 ## Architecture — the big picture
 
@@ -76,5 +76,5 @@ The current code is the **flat-redesign** (post-`hail-mary`). The important thin
 This repo is one of Doug's projects on his droplet. Broader context lives outside this directory — glance at these when a question needs it:
 
 - `/root/projects/linux-learning/CLAUDE.md` — admin hub for the droplet; how Doug likes to collaborate, overall environment.
-- `/root/projects/linux-learning/examples/DROPLET_CLAUDE.md` — detailed droplet setup notes, original WhatToWatch deployment walkthrough.
+- `/root/projects/linux-learning/examples/DROPLET_CLAUDE.md` — detailed droplet setup notes, original WhatToWatch deployment walkthrough (historical — project has since been renamed to couchlist).
 - `/root/.claude/projects/-root-projects-linux-learning/memory/MEMORY.md` — Doug's auto-memory index (user profile, code-style preferences, project catalog, WSL setup). Read the linked memory files for who Doug is and how he likes to work.

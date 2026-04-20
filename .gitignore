@@ -1,6 +1,6 @@
 node_modules/
-whattowatch.db
-whattowatch.db-shm
-whattowatch.db-wal
-whattowatch.db-journal
+couchlist.db
+couchlist.db-shm
+couchlist.db-wal
+couchlist.db-journal
 .env

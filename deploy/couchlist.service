@@ -1,4 +1,4 @@
-# whattowatch.service — keep the Node server running for couchlist.org.
+# couchlist.service — keep the Node server running for couchlist.org.
 #
 # This is a systemd "unit file." systemd is Linux's built-in service
 # manager — the same thing that starts sshd, cron, nginx, etc. at boot.
@@ -7,17 +7,17 @@
 # if it crashes, and collects its logs via journalctl.
 #
 # Install (one-time, run as root on the droplet):
-#   cp /opt/WhatToWatch/deploy/whattowatch.service /etc/systemd/system/
-#   systemctl daemon-reload                         # re-scan unit files
-#   systemctl enable --now whattowatch.service      # start + start-on-boot
+#   cp /root/projects/couchlist/deploy/couchlist.service /etc/systemd/system/
+#   systemctl daemon-reload                       # re-scan unit files
+#   systemctl enable --now couchlist.service      # start + start-on-boot
 #
 # Inspect:
-#   systemctl status whattowatch              # is it running? last logs?
-#   journalctl -u whattowatch -f              # live stream of stdout/err
-#   journalctl -u whattowatch --since today   # today's log history
+#   systemctl status couchlist              # is it running? last logs?
+#   journalctl -u couchlist -f              # live stream of stdout/err
+#   journalctl -u couchlist --since today   # today's log history
 
 [Unit]
-Description=WhatToWatch — couchlist.org Node server
+Description=couchlist — couchlist.org Node server
 # Wait for the network to be fully up before starting. Without this,
 # the service can race the network and fail on boot.
 After=network-online.target
@@ -28,9 +28,9 @@ Type=simple
 # Run as root for now — simplest path; harden later with a dedicated user.
 User=root
 # WorkingDirectory so relative paths in server.js resolve correctly.
-WorkingDirectory=/opt/WhatToWatch
+WorkingDirectory=/root/projects/couchlist
 # Absolute node path — don't rely on $PATH at boot.
-ExecStart=/usr/bin/node /opt/WhatToWatch/server.js
+ExecStart=/usr/bin/node /root/projects/couchlist/server.js
 # NODE_ENV=production tells express to skip dev-only logging.
 Environment=NODE_ENV=production
 # server.js reads process.env.PORT.

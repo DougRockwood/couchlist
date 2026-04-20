@@ -8,8 +8,8 @@ cd /root/.claude
 git pull origin main
 
 echo ""
-echo "=== Pulling WhatToWatch ==="
-cd /opt/WhatToWatch
+echo "=== Pulling couchlist ==="
+cd /root/projects/couchlist
 git pull origin main
 
 echo ""

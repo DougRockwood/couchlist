@@ -3,7 +3,7 @@
 #
 # This is the one-command deploy loop. RockwoodBot runs it when Doug
 # sends a deploy message from Telegram:
-#   bash /opt/WhatToWatch/deploy/deploy.sh
+#   bash /root/projects/couchlist/deploy/deploy.sh
 #
 # The script is idempotent and safe to run repeatedly:
 #  - If there are no new commits, it exits cleanly without a restart.
@@ -14,7 +14,7 @@
 
 set -euo pipefail                                    # stop on any error, unset var, or pipe failure
 
-cd /opt/WhatToWatch                                  # everything below happens inside the repo
+cd /root/projects/couchlist                          # everything below happens inside the repo
 
 echo "=== Fetching latest from origin/main ==="
 git fetch origin main                                # pulls refs into the repo without changing files
@@ -37,10 +37,10 @@ if git diff --name-only "$LOCAL" HEAD | grep -qE '^(package\.json|package-lock\.
     npm install --omit=dev                           # --omit=dev skips devDependencies in prod
 fi
 
-echo "=== Restarting whattowatch.service ==="
-systemctl restart whattowatch                        # systemd handles stop + start + Restart=always
+echo "=== Restarting couchlist.service ==="
+systemctl restart couchlist                          # systemd handles stop + start + Restart=always
 
 # Brief status check so Telegram can see whether the restart succeeded.
 # --no-pager keeps output flowing to stdout instead of launching `less`.
 echo "=== Status after restart ==="
-systemctl status whattowatch --no-pager --lines=5 || true
+systemctl status couchlist --no-pager --lines=5 || true

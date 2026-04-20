@@ -5,7 +5,7 @@
 
    1. Serve static files (index.html, style.css, app.js) from public/
    2. Provide a JSON API that app.js calls via fetch()
-   3. Store everything in a SQLite database file (whattowatch.db)
+   3. Store everything in a SQLite database file (couchlist.db)
 
    KEY DIFFERENCE FROM v1:
    Rankings and comments are NO LONGER separate tables. They live directly
@@ -39,7 +39,7 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const db = new Database(path.join(__dirname, 'whattowatch.db'));
+const db = new Database(path.join(__dirname, 'couchlist.db'));
 db.pragma('journal_mode = WAL');                                   // better concurrency
 
 
@@ -687,5 +687,5 @@ app.get('*', (req, res) => {
    ============================================================================ */
 
 app.listen(PORT, () => {
-  console.log('whattowatch server running on http://localhost:' + PORT);
+  console.log('couchlist server running on http://localhost:' + PORT);
 });

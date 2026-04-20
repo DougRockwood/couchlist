@@ -1,5 +1,5 @@
 {
-  "name": "whattowatch",
+  "name": "couchlist",
   "version": "1.0.0",
   "description": "What do you wanna watch? — shared movie list with ranked-choice voting",
   "main": "server.js",

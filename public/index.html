@@ -5,9 +5,9 @@
      app.js handles ALL behavior. style.css handles ALL appearance.
 
      The page is just a stack of named containers that app.js fills in:
-       1. search-box         — text input for TMDB movie search
-       2. search-results     — dropdown that appears below the search box
-       3. tab-bar            — visitor tabs + the Couch tab
+       1. tab-bar            — visitor tabs + the Couch tab (top of page)
+       2. search-box         — text input for TMDB movie search
+       3. search-results     — dropdown that appears below the search box
        4. movie-list         — the main list of movie entries
        5. copy-paste-btn     — bottom button to open the Copy/Paste modal
        6. copy-paste-modal   — fullscreen overlay for export/import/ID management
@@ -62,14 +62,8 @@
          row calls addMovie() and hides the dropdown.
          ================================================================ -->
 
-    <div id="search-area">
-      <div id="welcome-msg" style="display:none">Welcome! Enter a name to add or rank movies.</div>
-      <input type="text" id="search-box" placeholder="Add a movie..." autocomplete="off">
-      <div id="search-results"></div>
-    </div>
-
     <!-- ================================================================
-         TAB BAR — Couch tab + visitor tabs
+         TAB BAR — Couch tab + visitor tabs (sits at the very top)
          ================================================================
          app.js rebuilds this entirely via renderUserTabs().
          Each user tab is a pill colored with that visitor's chosen color:
@@ -82,6 +76,12 @@
          ================================================================ -->
 
     <div id="tab-bar"></div>
+
+    <div id="search-area">
+      <div id="welcome-msg" style="display:none">Welcome! Enter a name to add or rank movies.</div>
+      <input type="text" id="search-box" placeholder="Add a movie..." autocomplete="off">
+      <div id="search-results"></div>
+    </div>
 
     <!-- ================================================================
          MOVIE LIST — the main content area

@@ -3,4 +3,5 @@ couchlist.db
 couchlist.db-shm
 couchlist.db-wal
 couchlist.db-journal
+couchlist.db.bak-*
 .env

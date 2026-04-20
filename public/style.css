@@ -52,13 +52,11 @@ html, body {
 /* ============================================================================
    SECTION 2: APP CONTAINER
    ============================================================================
-   On phones: full width, no padding needed (entries go edge to edge).
-   On desktop: max-width of 600px, centered. A movie list doesn't need to
-   be wider than that — it just looks silly stretched across a big monitor.
+   Full width on every screen size — entries go edge to edge.
    ============================================================================ */
 
 #app {
-  max-width: 600px;
+  width: 100%;
   margin: 0 auto;
   min-height: 100vh;
   display: flex;
@@ -845,7 +843,6 @@ html, body {
 
   #app {
     padding: 20px 0;
-    max-width: 750px;                                              /* a bit wider to fit larger text */
   }
 
   .entry {

@@ -1577,13 +1577,13 @@ function openHowToModal() {
     + '<button class="modal-close">✕</button>'
     + '<h2>How CouchList works</h2>'
 
-    + '<h3>Adding movies</h3>'
-    + '<p>Type in the search box at the top to find a movie on TMDB. '
-    + 'Click a result to add it to the list.</p>'
-
     + '<h3>Your tab</h3>'
     + '<p>Type your name on your tab to join the list. Click the color dot on '
     + 'your own tab to change your color.</p>'
+
+    + '<h3>Adding movies</h3>'
+    + '<p>Type in the search box at the top to find a movie on TMDB. '
+    + 'Click a result to add it to the list.</p>'
 
     + '<h3>Ranking movies</h3>'
     + '<p>Click any visitor tab to see that person\'s personal ranking. On your '

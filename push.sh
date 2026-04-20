@@ -3,16 +3,17 @@
 
 set -e
 
-# --- Claude config (memories, settings, skills) ---
+# --- Claude config (memories, settings, skills, agents) ---
 echo "=== Pushing claude-config ==="
 cd /root/.claude
-if [ -n "$(git status --porcelain)" ]; then
-    git add -A
+# explicit paths only — skips session churn (history.jsonl, sessions/*.json, projects/*/*.jsonl)
+git add -- settings.json agents skills ':(glob)projects/*/memory/**' 2>/dev/null || true
+if [ -n "$(git diff --cached --name-only)" ]; then
     git commit -m "sync claude config $(date +%Y-%m-%d)"
     git push origin main
     echo "Claude config pushed."
 else
-    echo "No claude-config changes to push."
+    echo "No claude-config memory/settings changes to push."
 fi
 
 # --- This project ---

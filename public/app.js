@@ -822,7 +822,11 @@ function buildVisitorTab(v, isMe) {
   let html = '<div class="' + classes.join(' ') + '" data-tab="' + v.id + '" '
     + 'style="background:' + escapeHtml(v.color) + '">';
   html += '<span class="tab-color-dot" style="background:' + escapeHtml(v.color) + '"></span>';
-  if (isMe) {
+  if (isMe && isActive) {
+    /* Your tab is the active view — now it's an editable input.
+       The first tap on your own tab just activates it (via the span branch
+       below); the input only renders once you're already here, so mobile
+       keyboards don't pop up until a deliberate second tap. */
     html += '<input class="tab-name-input" type="text" value="'
       + escapeHtml(v.name) + '" autocomplete="off">';
   } else {
@@ -916,6 +920,11 @@ async function showMoviePopup(tmdbId, mediaType, anchorEl) {
     ? TMDB_IMG + 'w300' + detail.poster_path
     : '';
 
+  /* Stash identity on the popup so the popup's own click handler can open
+     the right TMDB page without needing to know which movie was tapped. */
+  popup.dataset.tmdbId = tmdbId;
+  popup.dataset.mediaType = mediaType;
+
   popup.innerHTML = '<div class="popup-content">'
     + (posterUrl ? '<img src="' + posterUrl + '" class="popup-poster">' : '')
     + '<div class="popup-info">'
@@ -935,6 +944,8 @@ function hideMoviePopup() {
   const popup = document.getElementById('movie-popup');
   popup.style.display = 'none';
   popup.innerHTML = '';
+  delete popup.dataset.tmdbId;
+  delete popup.dataset.mediaType;
 }
 
 
@@ -1531,8 +1542,6 @@ function setupEventListeners() {
   const movieList = document.getElementById('movie-list');
 
   movieList.addEventListener('click', e => {
-    hideMoviePopup();
-
     /* UP ARROW — move movie up one rank */
     const arrowUp = e.target.closest('.arrow-up');
     if (arrowUp) {
@@ -1561,11 +1570,11 @@ function setupEventListeners() {
       return;
     }
 
-    /* POSTER or TITLE — open TMDB page (movie or tv) */
+    /* POSTER or TITLE — show popup (tap-to-preview).
+       Tapping the popup itself is what navigates to TMDB — handled below. */
     const el = e.target.closest('.entry-poster, .entry-title');
     if (el) {
-      const mt = el.dataset.mediaType || 'movie';
-      window.open('https://www.themoviedb.org/' + mt + '/' + el.dataset.tmdbId, '_blank');
+      showMoviePopup(parseInt(el.dataset.tmdbId), el.dataset.mediaType || 'movie', el);
       return;
     }
 
@@ -1587,16 +1596,27 @@ function setupEventListeners() {
     }
   });
 
-  /* hover on poster or title → show popup (desktop) */
-  movieList.addEventListener('mouseenter', e => {
-    const el = e.target.closest('.entry-poster, .entry-title');
-    if (el) showMoviePopup(parseInt(el.dataset.tmdbId), el.dataset.mediaType || 'movie', el);
-  }, true);
+  /* Click the popup itself → open TMDB and dismiss. */
+  const moviePopup = document.getElementById('movie-popup');
+  moviePopup.addEventListener('click', () => {
+    const tmdbId = moviePopup.dataset.tmdbId;
+    const mt = moviePopup.dataset.mediaType || 'movie';
+    if (tmdbId) {
+      window.open('https://www.themoviedb.org/' + mt + '/' + tmdbId, '_blank');
+    }
+    hideMoviePopup();
+  });
 
-  movieList.addEventListener('mouseleave', e => {
-    const el = e.target.closest('.entry-poster, .entry-title');
-    if (el) hideMoviePopup();
-  }, true);
+  /* Any click outside the popup AND outside a movie poster/title dismisses
+     the popup. Clicks on a poster/title are allowed through so they can
+     re-show the popup for a different movie without a flicker. */
+  document.addEventListener('click', e => {
+    const popup = document.getElementById('movie-popup');
+    if (popup.style.display !== 'block') return;
+    if (e.target.closest('#movie-popup')) return;
+    if (e.target.closest('.entry-poster, .entry-title')) return;
+    hideMoviePopup();
+  });
 
   /* click outside search area → hide search results */
   document.addEventListener('click', e => {
@@ -1662,8 +1682,8 @@ function openHowToModal() {
     + 'everyone viewing the list sees the same toggles.</p>'
 
     + '<h3>Movie details</h3>'
-    + '<p>Hover (or long-press on phone) a poster or title to see the plot, '
-    + 'director, and cast. Click it to open the TMDB page.</p>'
+    + '<p>Tap a poster or title to see the plot, director, and cast. Tap the '
+    + 'popup to open the TMDB page, or tap anywhere else to dismiss it.</p>'
 
     + '<h3>Remove a movie</h3>'
     + '<p>Only the person who added a movie can remove it. The remove button '

@@ -801,7 +801,7 @@ function renderUserTabs() {
     /* brand new visitor — no name yet. Tab has just the name input. */
     html += '<div class="tab tab-mine tab-new">'
       + '<input id="name-input" class="tab-name-input" type="text" '
-      + 'placeholder="enter your name" autocomplete="off">'
+      + 'placeholder="Type your name" autocomplete="off">'
       + '</div>';
   }
 
@@ -1654,58 +1654,93 @@ function setupEventListeners() {
 
 function openHowToModal() {
   const modal = document.getElementById('how-to-modal');
+  const myColor = visitor ? visitor.color : '#bbb';
+  const isReady = !visitor || (selectedVisitors[visitorId] !== false);
+  const rdyClass = isReady ? 'ready' : 'not-ready';
+  const rdyText  = isReady ? 'RDY' : 'NAW';
+
   modal.innerHTML = '<div class="modal-content howto-modal">'
     + '<button class="modal-close">✕</button>'
     + '<h2>How CouchList works</h2>'
 
-    + '<h3>Your tab</h3>'
-    + '<p>Type your name on your tab to join the list. Click the color dot on '
-    + 'your own tab to change your color.</p>'
+    + '<p><span class="tab tab-mine tab-new howto-demo-tab">'
+    + '<input class="tab-name-input" type="text" placeholder="Type your name" '
+    + 'readonly tabindex="-1"></span> '
+    + 'on your tab to join the list.</p>'
 
-    + '<h3>Adding movies</h3>'
-    + '<p>Type in the search box at the top to find a movie on TMDB. '
-    + 'Click a result to add it to the list.</p>'
+    + '<p><strong>Pick a color</strong> by tapping the left circle '
+    + '<span class="tab-color-dot howto-demo-dot" data-howto-action="color" '
+    + 'style="background:' + escapeHtml(myColor) + '"></span>. '
+    + 'Or keep the random one assigned.</p>'
 
-    + '<h3>Ranking movies</h3>'
-    + '<p>Click any visitor tab to see that person\'s personal ranking. On your '
-    + 'own tab, use the up / down arrows to reorder. Double arrows jump a movie '
-    + 'to the top or bottom.</p>'
+    + '<p><strong>Search and add movies</strong> from TMDB in the search bar.</p>'
 
-    + '<h3>Comments</h3>'
-    + '<p>Tap any comment box on a movie to write or edit your thoughts. Each '
-    + 'person gets one comment per movie.</p>'
+    + '<p><strong>Rank movies</strong> on your own tab. Use the up/down '
+    + 'arrows to reorder. Double arrows jump to the top or bottom.</p>'
 
-    + '<h3>The Couch tab</h3>'
-    + '<p>Shows the group consensus ranking — a Borda count across everyone '
-    + 'marked <strong>RDY</strong>. Toggle <strong>RDY / NAW</strong> on any '
-    + 'tab to include or exclude that person\'s votes. RDY state is shared — '
-    + 'everyone viewing the list sees the same toggles.</p>'
+    + '<p><strong>Comment</strong> by tapping on '
+    + '<span class="comment-box howto-demo-box" style="color:#1976d2">'
+    + '<strong>doug:</strong></span> '
+    + '(only one per movie).</p>'
 
-    + '<h3>Movie details</h3>'
-    + '<p>Tap a poster or title to see the plot, director, and cast. Tap the '
-    + 'popup to open the TMDB page, or tap anywhere else to dismiss it.</p>'
+    + '<p>The <span class="tab tab-couch howto-demo-tab">Couch List</span> '
+    + 'is the result of a real-time vote (Borda method) across everyone marked '
+    + '<span class="tab-ready-btn ready howto-demo-rdy">RDY</span>.</p>'
 
-    + '<h3>Remove a movie</h3>'
-    + '<p>Only the person who added a movie can remove it. The remove button '
-    + 'only shows up on your own additions.</p>'
+    + '<p><strong>Toggle</strong> '
+    + '<span class="tab-ready-btn ' + rdyClass + ' howto-demo-rdy howto-demo-rdy-active" '
+    + 'data-howto-action="rdy">' + rdyText + '</span> '
+    + 'on any tab to include or exclude that person. Toggles are shared.</p>'
 
-    + '<h3>Info / sharing</h3>'
-    + '<p>The <strong>INFO</strong> button shows this list as an editable '
-    + 'text snapshot. Copy it to share the list, or paste an edited version '
-    + 'and click Apply to merge changes. Your visitor ID lives in that text — '
-    + 'save it somewhere if you want to keep your identity across devices or '
-    + 'after clearing cookies.</p>'
+    + '<p><strong>Tap movies</strong> for plot and cast pop up. Tap that '
+    + 'to go to TMDB.</p>'
 
-    + '<h3>No accounts, no security</h3>'
-    + '<p>This is a casual site. Your identity is just a random string in a '
-    + 'cookie. Anyone who sees your visitor ID can use it. Don\'t put anything '
-    + 'here you wouldn\'t want strangers to read.</p>'
+    + '<p><strong>Remove movies</strong> with the ✕ on the right. Only the '
+    + 'ones you have added.</p>'
+
+    + '<p><strong>The INFO button</strong> shows the list as editable text. '
+    + 'Copy it to share, or paste an edited version to merge changes. Your '
+    + 'visitor ID lives in there. Save it to keep your identity across '
+    + 'devices.</p>'
+
+    + '<p><strong>No accounts, no security.</strong> Your identity is just a '
+    + 'random cookie string. Anyone with your visitor ID can use it. Don\'t '
+    + 'put anything sensitive here.</p>'
+
+    + '<p class="howto-newlist">Go to '
+    + '<a href="https://couchlist.org/" target="_blank" rel="noopener">couchlist.org/</a> '
+    + 'to start a new list.</p>'
     + '</div>';
 
   modal.style.display = 'flex';
   modal.querySelector('.modal-close').addEventListener('click', () => {
     modal.style.display = 'none';
   });
+
+  /* Live color-dot in the demo: opens the real native color picker, which
+     only exists in the DOM when the user has a name. */
+  const colorDot = modal.querySelector('[data-howto-action="color"]');
+  if (colorDot && visitor) {
+    colorDot.style.cursor = 'pointer';
+    colorDot.addEventListener('click', () => {
+      const picker = document.getElementById('color-picker');
+      if (picker) picker.click();
+    });
+  }
+
+  /* Live RDY toggle: flips the user's own ready state and reflects it in
+     the demo button. handleReadyToggle updates selectedVisitors synchronously
+     before its await, so we can read the new state immediately. */
+  const rdyBtn = modal.querySelector('[data-howto-action="rdy"]');
+  if (rdyBtn && visitor) {
+    rdyBtn.addEventListener('click', () => {
+      handleReadyToggle(visitorId);
+      const nowReady = selectedVisitors[visitorId] !== false;
+      rdyBtn.classList.toggle('ready', nowReady);
+      rdyBtn.classList.toggle('not-ready', !nowReady);
+      rdyBtn.textContent = nowReady ? 'RDY' : 'NAW';
+    });
+  }
 }
 
 

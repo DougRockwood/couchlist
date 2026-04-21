@@ -776,6 +776,56 @@ html, body {
 
 .howto-modal strong { color: #000; }
 
+/* Inert mini comment-box used as a visual example inside the How-to modal.
+   Mirrors the real .comment-box look but shrinks it and disables hover/cursor. */
+.howto-modal .howto-demo-box {
+  display: inline-block;
+  vertical-align: middle;
+  cursor: default;
+  font-size: 11px;
+  padding: 1px 6px;
+  max-width: none;
+  margin: 0 1px;
+}
+.howto-modal .howto-demo-box strong { color: inherit; }
+
+/* Inline demos of real tab elements (blank tab, color dot, Couch tab, RDY
+   button). They keep the live appearance from .tab / .tab-color-dot /
+   .tab-ready-btn — these rules just align them with surrounding text and
+   neutralize the inherited pointer cursor on the inert ones. */
+.howto-modal .howto-demo-tab,
+.howto-modal .howto-demo-dot,
+.howto-modal .howto-demo-rdy {
+  vertical-align: middle;
+  margin: 0 2px;
+}
+.howto-modal .howto-demo-dot { display: inline-block; }
+.howto-modal .howto-demo-tab,
+.howto-modal .howto-demo-tab .tab-name-input,
+.howto-modal .howto-demo-rdy {
+  cursor: default;
+}
+.howto-modal .howto-demo-tab .tab-name-input {
+  pointer-events: none;
+}
+.howto-modal .howto-demo-rdy-active { cursor: pointer; }
+.howto-modal .howto-demo-dot[data-howto-action="color"]:hover {
+  filter: brightness(1.12);
+  border-color: rgba(0,0,0,0.4);
+}
+
+.howto-modal .howto-newlist {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.howto-modal .howto-newlist a { color: #1976d2; }
+
+@media (min-width: 700px) {
+  .howto-modal .howto-demo-box { font-size: 12px; }
+}
+
 
 /* ============================================================================
    SECTION 7: MOVIE INFO POPUP

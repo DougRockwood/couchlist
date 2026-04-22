@@ -559,6 +559,7 @@ html, body {
   cursor: pointer;
   padding: 4px;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .remove-btn:hover {

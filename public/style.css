@@ -522,7 +522,7 @@ html, body {
    alongside it, the comments row scrolls sideways (see below). */
 
 .entry-title {
-  flex: 0 0 200px;
+  flex: 0 0 150px;
   font-size: 14px;
   padding-top: 4px;
   cursor: pointer;
@@ -583,7 +583,7 @@ html, body {
   padding: 4px 8px;
   background: #f7f7f7;
   border-radius: 6px;
-  max-width: 260px;
+  max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

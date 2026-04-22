@@ -768,10 +768,28 @@ html, body {
   margin: 14px 0 4px 0;
 }
 
+/* Even, generous spacing between paragraphs so each line reads as its own
+   section — the inline demos used to blow out line height unpredictably. */
 .howto-modal p {
   font-size: 13px;
   color: #333;
-  margin: 0 0 4px 0;
+  margin: 0 0 14px 0;
+  padding-left: 16px;
+  position: relative;
+}
+
+/* Bullet in front of every section line except the outro. */
+.howto-modal p:not(.howto-newlist)::before {
+  content: "•";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  color: #e94560;
+  font-weight: bold;
+}
+
+.howto-modal p.howto-newlist {
+  padding-left: 0;
 }
 
 .howto-modal strong { color: #000; }
@@ -782,17 +800,17 @@ html, body {
   display: inline-block;
   vertical-align: middle;
   cursor: default;
-  font-size: 11px;
-  padding: 1px 6px;
+  font-size: 10px;
+  padding: 1px 5px;
   max-width: none;
   margin: 0 1px;
 }
 .howto-modal .howto-demo-box strong { color: inherit; }
 
 /* Inline demos of real tab elements (blank tab, color dot, Couch tab, RDY
-   button). They keep the live appearance from .tab / .tab-color-dot /
-   .tab-ready-btn — these rules just align them with surrounding text and
-   neutralize the inherited pointer cursor on the inert ones. */
+   button). They inherit look from .tab / .tab-color-dot / .tab-ready-btn
+   but get shrunk to ~50% here so they sit cleanly in paragraph text
+   instead of forcing tall, uneven line heights. */
 .howto-modal .howto-demo-tab,
 .howto-modal .howto-demo-dot,
 .howto-modal .howto-demo-rdy {
@@ -812,6 +830,34 @@ html, body {
 .howto-modal .howto-demo-dot[data-howto-action="color"]:hover {
   filter: brightness(1.12);
   border-color: rgba(0,0,0,0.4);
+}
+
+/* 50%-scale overrides for the live demo elements. Real sizes: tab 34px/14px,
+   color dot 28px, RDY 28px/10px, tab-couch padding 0 16px. */
+.howto-modal .howto-demo-tab {
+  height: 18px;
+  padding: 2px 6px;
+  gap: 3px;
+  border-radius: 9px;
+  font-size: 10px;
+}
+.howto-modal .howto-demo-tab.tab-couch {
+  padding: 0 8px;
+}
+.howto-modal .howto-demo-dot,
+.howto-modal .howto-demo-tab .tab-color-dot {
+  width: 14px;
+  height: 14px;
+}
+.howto-modal .howto-demo-tab .tab-name-input {
+  width: 80px;
+  font-size: 10px;
+}
+.howto-modal .howto-demo-rdy {
+  width: 16px;
+  height: 16px;
+  font-size: 7px;
+  letter-spacing: 0;
 }
 
 .howto-modal .howto-newlist {

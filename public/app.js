@@ -1658,6 +1658,9 @@ function openHowToModal() {
   const isReady = !visitor || (selectedVisitors[visitorId] !== false);
   const rdyClass = isReady ? 'ready' : 'not-ready';
   const rdyText  = isReady ? 'RDY' : 'NAW';
+  /* Show the viewer's actual display name in the comment demo, with a
+     lowercase fallback for pre-join sessions. */
+  const myName = (displayNames[visitorId] || (visitor && visitor.name) || 'your_name').toLowerCase();
 
   modal.innerHTML = '<div class="modal-content howto-modal">'
     + '<button class="modal-close">✕</button>'
@@ -1675,17 +1678,17 @@ function openHowToModal() {
 
     + '<p><strong>Search and add movies</strong> from TMDB in the search bar.</p>'
 
-    + '<p><strong>Rank movies</strong> on your own tab. Use the up/down '
-    + 'arrows to reorder. Double arrows jump to the top or bottom.</p>'
+    + '<p><strong>Rank movies</strong> on your tab with the arrows. '
+    + 'Double arrows jump to top/bottom.</p>'
 
     + '<p><strong>Comment</strong> by tapping on '
     + '<span class="comment-box howto-demo-box" style="color:#1976d2">'
-    + '<strong>doug:</strong></span> '
+    + '<strong>' + escapeHtml(myName) + ':</strong></span> '
     + '(only one per movie).</p>'
 
     + '<p>The <span class="tab tab-couch howto-demo-tab">Couch List</span> '
-    + 'is the result of a real-time vote (Borda method) across everyone marked '
-    + '<span class="tab-ready-btn ready howto-demo-rdy">RDY</span>.</p>'
+    + 'is a real-time vote result (Borda method) of the '
+    + '<span class="tab-ready-btn ready howto-demo-rdy">RDY</span> people.</p>'
 
     + '<p><strong>Toggle</strong> '
     + '<span class="tab-ready-btn ' + rdyClass + ' howto-demo-rdy howto-demo-rdy-active" '
@@ -1698,14 +1701,11 @@ function openHowToModal() {
     + '<p><strong>Remove movies</strong> with the ✕ on the right. Only the '
     + 'ones you have added.</p>'
 
-    + '<p><strong>The INFO button</strong> shows the list as editable text. '
-    + 'Copy it to share, or paste an edited version to merge changes. Your '
-    + 'visitor ID lives in there. Save it to keep your identity across '
-    + 'devices.</p>'
+    + '<p><strong>The INFO button</strong> shows all the data, for nerds.</p>'
 
-    + '<p><strong>No accounts, no security.</strong> Your identity is just a '
-    + 'random cookie string. Anyone with your visitor ID can use it. Don\'t '
-    + 'put anything sensitive here.</p>'
+    + '<p><strong>No security.</strong> Your ID is just a random text string. '
+    + 'Anyone who sees it can be you on the site. Don\'t put anything '
+    + 'sensitive here.</p>'
 
     + '<p class="howto-newlist">Go to '
     + '<a href="https://couchlist.org/" target="_blank" rel="noopener">couchlist.org/</a> '

@@ -85,8 +85,17 @@ html, body {
   padding: 12px 12px 0;
 }
 
+/* Search + INFO/Help buttons sit on one row. The input takes all remaining
+   space; the two buttons sit flush right, sized tight around their text. */
+#search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 #search-box {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 10px 14px;
   font-size: 16px;
   border: 1px solid #bbb;
@@ -94,6 +103,30 @@ html, body {
   background: #ffffff;
   color: #222;
   outline: none;
+}
+
+/* Craigslist-blue outlined rectangles next to the search box. Rounded
+   corners (not fully round like tabs). Same 14px text as tabs; padding
+   kept tight so the box hugs the label. */
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #0000ee;
+  background: #ffffff;
+  border: 1px solid #0000ee;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+.action-btn:hover {
+  background: #f0f0ff;
 }
 
 #search-box:focus {
@@ -208,8 +241,7 @@ html, body {
   height: 34px;
 }
 
-.tab-couch,
-.tab-action {
+.tab-couch {
   padding: 0 16px;
   color: #333;
 }
@@ -696,8 +728,7 @@ html, body {
    export, and import.
    ============================================================================ */
 
-/* #copy-paste-btn / #how-to-btn removed: INFO + How-to-use are now tabs
-   in #tab-bar (see .tab-action). */
+/* INFO + Help live as outlined buttons in #search-row (see .action-btn). */
 
 #copy-paste-modal {
   display: none;
@@ -837,8 +868,6 @@ html, body {
   line-height: 1.4;
   margin: 10px 2px 0 2px;
 }
-
-/* #how-to-btn removed — now a .tab-action pill in the tab bar. */
 
 #how-to-modal {
   display: none;

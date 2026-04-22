@@ -531,11 +531,13 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
   entry.className = 'entry';
   entry.dataset.movieId = movie.id;
 
-  /* 1. RANK NUMBER + optional drag handle + optional tie indicator
+  /* 1. RANK NUMBER + optional drag handle.
      On our own tab a square grab handle sits left of the number. Pointerdown
      on it starts a drag (see Section 8). The handle gets `touch-action:none`
      so finger drags don't get stolen by the browser scroll — but the rest of
-     the row keeps default touch-action, so tapping elsewhere still scrolls. */
+     the row keeps default touch-action, so tapping elsewhere still scrolls.
+     The "tied N-M" label used to live here but now sits next to the adder
+     circle at the bottom of the title column (see step 3). */
   const tieHtml = tieLabel
     ? '<span class="tie-label">tied ' + tieLabel + '</span>' : '';
 
@@ -546,13 +548,11 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
       + '<span class="grab-icon">&#9776;</span>'           /* ☰ three-bars icon */
       + '</div>'
       + '<span class="rank-number">' + position + '</span>'
-      + tieHtml
       + '</div>';
   } else {
     /* read-only rank number */
     rankHtml = '<div class="entry-rank">'
       + '<span class="rank-number">' + position + '</span>'
-      + tieHtml
       + '</div>';
   }
 
@@ -566,10 +566,12 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
     + (posterUrl ? '<img src="' + posterUrl + '">' : '<div class="no-poster">?</div>')
     + '</div>';
 
-  /* 3. TITLE + ADDER BADGE
-     The title column also houses a small circular badge showing who added
-     the movie — their color, first letter of their name, pinned to the
-     bottom so it lines up with the bottom of the poster on its left. */
+  /* 3. TITLE + ADDER BADGE (+ optional TIE LABEL)
+     The title column houses the title text at the top and a bottom row
+     pinned to the bottom of the column. That bottom row contains the small
+     circular adder badge (color + initial) and, on the Couch tab only, the
+     "tied N-M" label to its right. Pinning both to the bottom makes them
+     line up with the bottom of the 69px poster on the left. */
   const adder = visitorById[movie.added_by];
   const adderName = adder ? (adder.name || '') : '';
   const adderInitial = adderName.trim().charAt(0).toUpperCase() || '?';
@@ -580,12 +582,17 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
     + escapeHtml(adderInitial)
     + '</div>';
 
+  const titleBottomHtml = '<div class="entry-title-bottom">'
+    + addedByHtml
+    + tieHtml
+    + '</div>';
+
   const titleHtml = '<div class="entry-title" data-tmdb-id="' + movie.tmdb_id
     + '" data-media-type="' + mediaType + '">'
     + '<div class="entry-title-text">'
     + escapeHtml(movie.title) + ' (' + movie.year + ')'
     + '</div>'
-    + addedByHtml
+    + titleBottomHtml
     + '</div>';
 
   /* 4. COMMENTS — read directly from the movie row's userN_comment columns.

@@ -538,6 +538,17 @@ html, body {
   /* content-sized; badge below uses margin-top:auto to push to the bottom */
 }
 
+/* Bottom row inside .entry-title: [adder badge] [optional tie label].
+   margin-top:auto pushes it to the bottom of the title column so it aligns
+   with the bottom of the 69px poster on its left. */
+.entry-title-bottom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+  align-self: flex-start;
+}
+
 .entry-added-by {
   width: 21px;                                                   /* 75% of the 28px tab color-dot */
   height: 21px;
@@ -552,18 +563,17 @@ html, body {
   text-shadow: 0 1px 2px rgba(0,0,0,0.55);
   border: 1px solid rgba(0,0,0,0.2);
   flex-shrink: 0;
-  align-self: flex-start;                                        /* hug the left edge of the title column (right beside the poster) */
-  margin-top: auto;                                              /* push to the bottom of the column */
 }
 
 /* --- Comment boxes ---
-   One horizontal row alongside the title. Comment boxes keep their own
-   width (flex-shrink:0); if the row gets wider than the viewport the
-   whole page scrolls sideways along with the tabs above. */
+   One vertical column alongside the title; each comment pill stacks below
+   the previous. Row height grows with the commenter count so every comment
+   stays readable without horizontal scroll. */
 
 .entry-comments {
   display: flex;
-  flex-wrap: nowrap;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 4px;
   flex-shrink: 0;
 }

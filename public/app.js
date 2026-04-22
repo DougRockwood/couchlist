@@ -944,14 +944,22 @@ function updateAutoScroll() {
       const delta = dragState.autoScrollDir * MAX_SCROLL_PX_PER_FRAME;
 
       /* try layout-scroll first; cheap and smooth when not zoomed */
-      const beforeY = window.scrollY;
       window.scrollBy(0, delta);
-      const layoutMoved = window.scrollY !== beforeY;
 
-      /* if layout scroll hit a document boundary, we may still be zoomed in
-         with the visual viewport partway through the page. Pan it toward
-         the list edge by scrolling the edgemost entry into view. */
-      if (!layoutMoved) {
+      /* scrollIntoView fallback — only when the DOCUMENT is actually at its
+         scroll boundary AND the visual viewport still has room to pan
+         inward (i.e. user is pinch-zoomed and hasn't reached the real edge
+         of the list yet). We can't key off "did scrollBy move?" — small
+         fractional deltas near EDGE_PX can round to zero mid-document and
+         trigger a false snap-to-end. */
+      const docH = document.documentElement.scrollHeight;
+      const atTop    = delta < 0 && window.scrollY <= 0.5;
+      const atBottom = delta > 0 && window.scrollY + window.innerHeight >= docH - 0.5;
+      const vvPanUp    = vv && vv.offsetTop > 1;
+      const vvPanDown  = vv && (vv.offsetTop + vv.height) < (window.innerHeight - 1);
+      const needFallback = (atTop && vvPanUp) || (atBottom && vvPanDown);
+
+      if (needFallback) {
         const entries = document.querySelectorAll('#movie-list .entry');
         if (entries.length) {
           const target = delta < 0 ? entries[0] : entries[entries.length - 1];

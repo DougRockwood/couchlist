@@ -451,7 +451,7 @@ html, body {
    alongside it, the comments row scrolls sideways (see below). */
 
 .entry-title {
-  flex: 1;
+  flex: 0 0 auto;
   font-size: 14px;
   padding-top: 4px;
   cursor: pointer;

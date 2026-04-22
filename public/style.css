@@ -338,8 +338,9 @@ html, body {
      .entry-comments — horizontal row of comment boxes
      .remove-btn     — small X button (only if you added this movie)
 
-   On a phone, the entry wraps: poster + title on the first line, comments
-   below. The rank number is always on the left.
+   On a phone, the title keeps a readable floor width; if the comments
+   don't fit alongside it they scroll horizontally in place (drag the
+   comment row sideways). The rank number is always on the left.
    ============================================================================ */
 
 #movie-list {
@@ -446,25 +447,33 @@ html, body {
   font-size: 20px;
 }
 
-/* --- Title --- */
+/* --- Title ---
+   On mobile the title used to get squeezed into a narrow column by the
+   comments' flex:2, making long titles wrap into 4-5 short lines. We give
+   it a comfortable floor so it stays readable; if the comments don't fit
+   alongside it, the comments row scrolls sideways (see below). */
 
 .entry-title {
   flex: 1;
   font-size: 14px;
   padding-top: 4px;
   cursor: pointer;
-  min-width: 0;
+  min-width: 150px;
   color: #0000ee;
 }
 
-/* --- Comment boxes --- */
+/* --- Comment boxes ---
+   One horizontal row; if there are more comments than fit, drag sideways
+   to see them. Comment boxes themselves don't shrink. */
 
 .entry-comments {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
-  flex: 2;
+  flex: 1;
   min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .comment-box {
@@ -478,6 +487,7 @@ html, body {
   white-space: nowrap;
   cursor: pointer;
   border: 1px solid #ccc;
+  flex-shrink: 0;
 }
 
 /* --- Comment expanded state ---

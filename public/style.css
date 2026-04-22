@@ -404,7 +404,7 @@ html, body {
   display: flex;
   flex-wrap: nowrap;
   align-items: flex-start;
-  gap: 8px;
+  gap: 4px;
   padding: 8px;
   border-bottom: 1px solid #ccc;
   position: relative;
@@ -570,13 +570,12 @@ html, body {
 }
 
 /* --- Title ---
-   On mobile the title used to get squeezed into a narrow column by the
-   comments' flex:2, making long titles wrap into 4-5 short lines. We give
-   it a comfortable floor so it stays readable; if the comments don't fit
-   alongside it, the comments row scrolls sideways (see below). */
+   Sizes to its text so the comments column can sit flush against it.
+   Long titles wrap at max-width: 150px instead of running off sideways. */
 
 .entry-title {
-  flex: 0 0 150px;
+  flex: 0 0 auto;
+  max-width: 150px;
   font-size: 14px;
   padding-top: 4px;
   cursor: pointer;
@@ -732,7 +731,6 @@ html, body {
   cursor: pointer;
   padding: 4px;
   flex-shrink: 0;
-  margin-left: auto;
 }
 
 .remove-btn:hover {

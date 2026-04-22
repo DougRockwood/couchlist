@@ -13,10 +13,12 @@
 
    LAYOUT (top to bottom on a phone):
      #app              — full-width container, centered on desktop
-     #search-area      — sticky at top so you can always add movies
-     #search-box       — text input, full width
-     #search-results   — dropdown overlay below the search box
-     #tab-bar          — horizontal scroll of visitor tabs
+     #frozen-top       — sticky wrapper: tab bar + search row stay pinned
+       #tab-scroll     — overflow-x:auto so many visitors scroll in place
+         #tab-bar      — horizontal row of visitor tabs
+       #search-area    — search box + INFO/Help buttons on one row
+         #search-box   — text input, grows to fill row
+         #search-results — dropdown overlay below the search box
      #movie-list       — main scrolling area, fills remaining height
      .entry            — one movie row: rank | poster | title | comments | remove
      #copy-paste-btn   — fixed bottom-left button
@@ -54,10 +56,11 @@ html, body {
    Full width on every screen size — entries go edge to edge.
    ============================================================================ */
 
-/* #app sizes itself to its widest child (an entry with lots of comments,
-   or a long tab bar) but never narrower than the viewport. When its
-   content exceeds the viewport, the whole page pans horizontally — tabs,
-   search, and entries all scroll together. */
+/* #app sizes itself to its widest movie entry (a row with lots of
+   comments) but never narrower than the viewport. The tab bar has its
+   own inner horizontal scroll and doesn't contribute to this width.
+   When an entry exceeds the viewport the page pans horizontally; the
+   frozen top rows pan with it. */
 #app {
   min-width: 100%;
   width: max-content;
@@ -77,10 +80,28 @@ html, body {
    doesn't push the list down.
    ============================================================================ */
 
-#search-area {
+/* #frozen-top is the spreadsheet-style frozen header: tab bar + search row
+   stay pinned to the top of the viewport while the movie list scrolls
+   beneath. Background is opaque so scrolling entries don't show through. */
+#frozen-top {
   position: sticky;
   top: 0;
   z-index: 100;
+  background: #ffffff;
+  width: 100%;
+}
+
+/* Tab row gets its own horizontal scroll. Because overflow:auto creates a
+   scroll container, #tab-bar's intrinsic width no longer forces the page
+   wider — the site width is now driven only by the movie rows below. */
+#tab-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  width: 100%;
+}
+
+#search-area {
+  position: relative;
   background: #ffffff;
   padding: 12px 12px 0;
 }
@@ -215,15 +236,16 @@ html, body {
    entered a name yet) or a hidden color picker.
    ============================================================================ */
 
-/* The tab bar doesn't scroll independently — it rides with the page's
-   horizontal scroll along with the entries. Below, #app sizes itself to
-   its widest child so everything pans together. */
+/* The tab bar scrolls sideways inside #tab-scroll when too many visitors
+   are added. Its intrinsic width is whatever its flex children need; the
+   surrounding scroll container caps how much of that is visible. */
 #tab-bar {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 10px 12px;
   white-space: nowrap;
+  width: max-content;
 }
 
 .tab {

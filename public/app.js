@@ -570,10 +570,26 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
     + (posterUrl ? '<img src="' + posterUrl + '">' : '<div class="no-poster">?</div>')
     + '</div>';
 
-  /* 3. TITLE */
+  /* 3. TITLE + ADDER BADGE
+     The title column also houses a small circular badge showing who added
+     the movie — their color, first letter of their name, pinned to the
+     bottom so it lines up with the bottom of the poster on its left. */
+  const adder = visitorById[movie.added_by];
+  const adderName = adder ? (adder.name || '') : '';
+  const adderInitial = adderName.trim().charAt(0).toUpperCase() || '?';
+  const adderColor = adder ? adder.color : '#999';
+  const addedByHtml = '<div class="entry-added-by" '
+    + 'style="background: ' + escapeHtml(adderColor) + '" '
+    + 'title="Added by ' + escapeHtml(adderName || 'unknown') + '">'
+    + escapeHtml(adderInitial)
+    + '</div>';
+
   const titleHtml = '<div class="entry-title" data-tmdb-id="' + movie.tmdb_id
     + '" data-media-type="' + mediaType + '">'
+    + '<div class="entry-title-text">'
     + escapeHtml(movie.title) + ' (' + movie.year + ')'
+    + '</div>'
+    + addedByHtml
     + '</div>';
 
   /* 4. COMMENTS — read directly from the movie row's userN_comment columns.

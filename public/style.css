@@ -457,6 +457,33 @@ html, body {
   padding-top: 4px;
   cursor: pointer;
   color: #0000ee;
+  /* column layout: title text at the top, adder badge pinned to the bottom
+     so it aligns with the bottom of the 69px poster on its left. */
+  display: flex;
+  flex-direction: column;
+  min-height: 69px;
+}
+
+.entry-title-text {
+  /* content-sized; badge below uses margin-top:auto to push to the bottom */
+}
+
+.entry-added-by {
+  width: 21px;                                                   /* 75% of the 28px tab color-dot */
+  height: 21px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+  border: 1px solid rgba(0,0,0,0.2);
+  flex-shrink: 0;
+  align-self: flex-start;                                        /* hug the left edge of the title column (right beside the poster) */
+  margin-top: auto;                                              /* push to the bottom of the column */
 }
 
 /* --- Comment boxes ---

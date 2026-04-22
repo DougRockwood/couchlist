@@ -404,7 +404,7 @@ html, body {
   display: flex;
   flex-wrap: nowrap;
   align-items: flex-start;
-  gap: 4px;
+  gap: 1px;
   padding: 8px;
   border-bottom: 1px solid #ccc;
   position: relative;
@@ -570,12 +570,12 @@ html, body {
 }
 
 /* --- Title ---
-   Sizes to its text so the comments column can sit flush against it.
-   Long titles wrap at max-width: 150px instead of running off sideways. */
+   Fixed 150px column so the comments column always starts at the same
+   x-offset regardless of title length. Long titles wrap within the
+   column; short titles leave trailing space. */
 
 .entry-title {
-  flex: 0 0 auto;
-  max-width: 150px;
+  flex: 0 0 150px;
   font-size: 14px;
   padding-top: 4px;
   cursor: pointer;
@@ -731,6 +731,7 @@ html, body {
   cursor: pointer;
   padding: 4px;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .remove-btn:hover {

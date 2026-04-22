@@ -44,7 +44,6 @@ html, body {
   line-height: 1.4;
   background: #ffffff;
   color: #222;
-  overflow-x: hidden;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -55,8 +54,13 @@ html, body {
    Full width on every screen size — entries go edge to edge.
    ============================================================================ */
 
+/* #app sizes itself to its widest child (an entry with lots of comments,
+   or a long tab bar) but never narrower than the viewport. When its
+   content exceeds the viewport, the whole page pans horizontally — tabs,
+   search, and entries all scroll together. */
 #app {
-  width: 100%;
+  min-width: 100%;
+  width: max-content;
   margin: 0 auto;
   min-height: 100vh;
   display: flex;
@@ -178,22 +182,15 @@ html, body {
    entered a name yet) or a hidden color picker.
    ============================================================================ */
 
+/* The tab bar doesn't scroll independently — it rides with the page's
+   horizontal scroll along with the entries. Below, #app sizes itself to
+   its widest child so everything pans together. */
 #tab-bar {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 10px 12px;
-  overflow-x: auto;
   white-space: nowrap;
-  -webkit-overflow-scrolling: touch;
-}
-
-/* hide the scrollbar on the tab bar — it's ugly, users swipe instead */
-#tab-bar::-webkit-scrollbar {
-  display: none;
-}
-#tab-bar {
-  scrollbar-width: none;
 }
 
 .tab {
@@ -350,7 +347,7 @@ html, body {
 
 .entry {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: flex-start;
   gap: 8px;
   padding: 8px;
@@ -463,25 +460,23 @@ html, body {
 }
 
 /* --- Comment boxes ---
-   One horizontal row; if there are more comments than fit, drag sideways
-   to see them. Comment boxes themselves don't shrink. */
+   One horizontal row alongside the title. Comment boxes keep their own
+   width (flex-shrink:0); if the row gets wider than the viewport the
+   whole page scrolls sideways along with the tabs above. */
 
 .entry-comments {
   display: flex;
   flex-wrap: nowrap;
   gap: 4px;
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+  flex-shrink: 0;
 }
 
 .comment-box {
   font-size: 12px;
-  padding: 4px 6px;
+  padding: 4px 8px;
   background: #f7f7f7;
   border-radius: 6px;
-  max-width: 200px;
+  max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

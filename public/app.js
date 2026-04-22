@@ -430,8 +430,8 @@ async function addMovie(tmdbMovie) {
    Ties get a "tied 2-3" label. Ties are broken randomly.
 
    --- renderEntry(movie, position, tieLabel, isMyTab) ---
-   Builds one row. If isMyTab is true, shows up/down arrows instead of
-   a static rank number.
+   Builds one row. If isMyTab is true, shows a square grab handle to the
+   left of the rank number (drag-to-reorder — see Section 8).
    ============================================================================ */
 
 function renderList() {
@@ -531,25 +531,21 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
   entry.className = 'entry';
   entry.dataset.movieId = movie.id;
 
-  /* 1. RANK NUMBER + optional up/down arrows + optional tie indicator
-     If this is our tab, show clickable arrows to move the movie up or down.
-     The up arrow is the top half of the rank area, down arrow is the bottom half. */
+  /* 1. RANK NUMBER + optional drag handle + optional tie indicator
+     On our own tab a square grab handle sits left of the number. Pointerdown
+     on it starts a drag (see Section 8). The handle gets `touch-action:none`
+     so finger drags don't get stolen by the browser scroll — but the rest of
+     the row keeps default touch-action, so tapping elsewhere still scrolls. */
   const tieHtml = tieLabel
     ? '<span class="tie-label">tied ' + tieLabel + '</span>' : '';
 
   let rankHtml;
   if (isMyTab && mySlot) {
-    /* show single arrows (swap one) on left, rank number center, double arrows (jump to edge) on right */
     rankHtml = '<div class="entry-rank">'
-      + '<div class="rank-arrows">'
-      + '<div class="arrow-up" data-movie-id="' + movie.id + '">&#9650;</div>'
-      + '<div class="arrow-down" data-movie-id="' + movie.id + '">&#9660;</div>'
+      + '<div class="grab-handle" data-movie-id="' + movie.id + '" aria-label="Drag to reorder">'
+      + '<span class="grab-icon">&#9776;</span>'           /* ☰ three-bars icon */
       + '</div>'
       + '<span class="rank-number">' + position + '</span>'
-      + '<div class="rank-arrows">'
-      + '<div class="arrow-top" data-movie-id="' + movie.id + '"><span>&#9650;</span><span>&#9650;</span></div>'
-      + '<div class="arrow-bottom" data-movie-id="' + movie.id + '"><span>&#9660;</span><span>&#9660;</span></div>'
-      + '</div>'
       + tieHtml
       + '</div>';
   } else {
@@ -650,38 +646,343 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
 
 
 /* ============================================================================
-   SECTION 8: SWAP RANK (replaces drag-to-reorder)
+   SECTION 8: DRAG TO REORDER
    ============================================================================
-   Called when user clicks an up or down arrow on their own tab.
-   Tells the server to swap this movie's rank with the one above/below.
-   Then reloads the list to show the new order.
+   On your own tab each row has a grab handle. Pointerdown on it starts a
+   drag; pointermove follows the finger/cursor; pointerup commits the new
+   order to the server via /api/list/:id/my-ranks.
 
-   This is the ENTIRE reordering system. No pointer events, no drag state,
-   no transform calculations, no pointer capture. One click, one swap.
+   Key design points (why this isn't the old broken drag):
+     - Only the handle is draggable, not the whole row. Easy to target.
+     - The list does NOT re-render during a drag. We clone the row into a
+       floater and move the CLONE; the real DOM stays exactly as it was
+       when the drag started. The only in-place change is toggling classes
+       on entries to show the drop indicator.
+     - No server call happens until the drop. One trip, one source of truth.
+     - Auto-scroll near viewport edges is a simple rAF loop that calls
+       window.scrollBy — browsers don't do this for custom pointer drags.
+     - touch-action:none on the handle means the browser doesn't steal the
+       pointer for its own scroll gesture when the finger moves vertically.
    ============================================================================ */
 
-async function swapRank(movieId, direction) {
-  if (!mySlot) return;                                             // can't swap if we're not on the list
+let dragState = null;     /* { movieId, originalEntry, floater, orderedMovieIds,
+                              startIndex, currentIndex, pointerY,
+                              autoScrollDir, autoScrollFrame } */
 
-  await fetch(API + '/list/' + listId + '/swap', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ slot: mySlot, movieId: movieId, direction: direction })
-  });
-
-  await loadList();
-}
-
-
-async function moveToEdge(movieId, direction) {
+function onGrabPointerDown(e) {
+  if (e.button !== undefined && e.button !== 0) return;           // left click / primary touch only
   if (!mySlot) return;
 
-  await fetch(API + '/list/' + listId + '/move', {
+  const handle = e.target.closest('.grab-handle');
+  if (!handle) return;
+  const entry = handle.closest('.entry');
+  if (!entry) return;
+
+  e.preventDefault();                                             // stop text selection / native drag
+  handle.setPointerCapture(e.pointerId);
+
+  /* snapshot the on-screen order AT drag start. Every drop target index is
+     relative to this list, not a live query — so sorting/reflow during the
+     drag can't desync us. */
+  const entries = Array.from(document.querySelectorAll('#movie-list .entry'));
+  const orderedMovieIds = entries.map(el => parseInt(el.dataset.movieId));
+  const startIndex = entries.indexOf(entry);
+
+  /* build a visual clone that follows the pointer */
+  const rect = entry.getBoundingClientRect();
+  const floater = entry.cloneNode(true);
+  floater.classList.add('drag-floater');
+  floater.classList.remove('dragging', 'drop-above', 'drop-below');
+  floater.style.height = rect.height + 'px';
+  floater.style.top = rect.top + 'px';
+  document.body.appendChild(floater);
+
+  entry.classList.add('dragging');                                // hides contents, leaves the gap
+
+  /* build the two edge bars — pinned to the visible top/bottom each frame */
+  const topBar = document.createElement('div');
+  topBar.className = 'drag-edge-bar drag-edge-bar-top';
+  topBar.textContent = 'To the top!';
+  const bottomBar = document.createElement('div');
+  bottomBar.className = 'drag-edge-bar drag-edge-bar-bottom';
+  bottomBar.textContent = 'To the bottom!';
+  document.body.appendChild(topBar);
+  document.body.appendChild(bottomBar);
+
+  dragState = {
+    movieId: parseInt(entry.dataset.movieId),
+    originalEntry: entry,
+    handle: handle,
+    pointerId: e.pointerId,
+    floater: floater,
+    floaterHeight: rect.height,
+    grabOffsetY: e.clientY - rect.top,                            // keep handle under finger
+    orderedMovieIds: orderedMovieIds,
+    startIndex: startIndex,
+    currentIndex: startIndex,
+    pointerY: e.clientY,
+    autoScrollDir: 0,
+    autoScrollFrame: null,
+    topBar: topBar,
+    bottomBar: bottomBar,
+    inEdgeBar: null,                                              // 'top' | 'bottom' | null
+  };
+
+  positionEdgeBars();
+
+  handle.addEventListener('pointermove', onDragPointerMove);
+  handle.addEventListener('pointerup', onDragPointerUp);
+  handle.addEventListener('pointercancel', onDragPointerUp);
+}
+
+function onDragPointerMove(e) {
+  if (!dragState || e.pointerId !== dragState.pointerId) return;
+  dragState.pointerY = e.clientY;
+
+  /* move the floater so the point under the finger stays the same */
+  dragState.floater.style.top = (e.clientY - dragState.grabOffsetY) + 'px';
+
+  positionEdgeBars();
+  updateDropIndicator();
+  updateAutoScroll();
+}
+
+function onDragPointerUp(e) {
+  if (!dragState || e.pointerId !== dragState.pointerId) return;
+
+  const targetIndex = dragState.currentIndex;
+  const startIndex = dragState.startIndex;
+  const orderedMovieIds = dragState.orderedMovieIds.slice();
+
+  /* tear down drag UI first, regardless of whether anything changed */
+  stopAutoScroll();
+  dragState.originalEntry.classList.remove('dragging');
+  document.querySelectorAll('#movie-list .entry.drop-above, #movie-list .entry.drop-below')
+    .forEach(el => el.classList.remove('drop-above', 'drop-below'));
+  dragState.floater.remove();
+  dragState.topBar.remove();
+  dragState.bottomBar.remove();
+  const handle = dragState.handle;
+  handle.removeEventListener('pointermove', onDragPointerMove);
+  handle.removeEventListener('pointerup', onDragPointerUp);
+  handle.removeEventListener('pointercancel', onDragPointerUp);
+  try { handle.releasePointerCapture(dragState.pointerId); } catch (_) { /* already released */ }
+  dragState = null;
+
+  if (targetIndex === startIndex) return;                         // dropped in place, no-op
+
+  /* build the new order: pull the dragged id, reinsert at target */
+  const [dragged] = orderedMovieIds.splice(startIndex, 1);
+  orderedMovieIds.splice(targetIndex, 0, dragged);
+
+  commitReorder(orderedMovieIds);
+}
+
+/* Position the "To the top!" / "To the bottom!" bars flush with the
+   visible viewport. Uses visualViewport when available so pinch-zoom
+   works. Height is scaled by the zoom factor so the bars stay a
+   consistent on-screen size (~44px). */
+const EDGE_BAR_SCREEN_HEIGHT = 44;
+
+function positionEdgeBars() {
+  if (!dragState) return;
+  const vv = window.visualViewport;
+  const scale    = vv ? vv.scale       : 1;
+  const visTop   = vv ? vv.offsetTop   : 0;
+  const visLeft  = vv ? vv.offsetLeft  : 0;
+  const visW     = vv ? vv.width       : window.innerWidth;
+  const visH     = vv ? vv.height      : window.innerHeight;
+  const barH     = EDGE_BAR_SCREEN_HEIGHT / scale;                 // layout px that renders to ~44 screen px
+  const fontPx   = 18 / scale;
+
+  const t = dragState.topBar;
+  t.style.top    = visTop + 'px';
+  t.style.left   = visLeft + 'px';
+  t.style.width  = visW + 'px';
+  t.style.height = barH + 'px';
+  t.style.fontSize = fontPx + 'px';
+
+  const b = dragState.bottomBar;
+  b.style.top    = (visTop + visH - barH) + 'px';
+  b.style.left   = visLeft + 'px';
+  b.style.width  = visW + 'px';
+  b.style.height = barH + 'px';
+  b.style.fontSize = fontPx + 'px';
+
+  dragState.edgeBarHeight = barH;                                  // cached for hit-testing
+}
+
+/* Figure out which gap the pointer is currently over and paint the drop
+   indicator there. The edge bars win: if the pointer is inside either bar
+   we commit to rank 1 or last and suppress the in-list indicator. Else
+   we compute midlines of every non-dragging entry and find which one the
+   pointer is above vs. below. */
+function updateDropIndicator() {
+  if (!dragState) return;
+  const entries = Array.from(document.querySelectorAll('#movie-list .entry'));
+  const y = dragState.pointerY;
+
+  /* --- edge bars first ---
+     y is in layout coords; so are the bar boundaries we just computed. */
+  const vv = window.visualViewport;
+  const visTop = vv ? vv.offsetTop : 0;
+  const visH   = vv ? vv.height    : window.innerHeight;
+  const barH   = dragState.edgeBarHeight || (EDGE_BAR_SCREEN_HEIGHT);
+  const topBarBottom    = visTop + barH;
+  const bottomBarTop    = visTop + visH - barH;
+
+  dragState.topBar.classList.remove('active');
+  dragState.bottomBar.classList.remove('active');
+
+  if (y <= topBarBottom) {
+    /* commit: jump to rank 1 */
+    document.querySelectorAll('#movie-list .entry.drop-above, #movie-list .entry.drop-below')
+      .forEach(el => el.classList.remove('drop-above', 'drop-below'));
+    dragState.topBar.classList.add('active');
+    dragState.inEdgeBar = 'top';
+    dragState.currentIndex = 0;
+    return;
+  }
+  if (y >= bottomBarTop) {
+    /* commit: jump to last rank */
+    document.querySelectorAll('#movie-list .entry.drop-above, #movie-list .entry.drop-below')
+      .forEach(el => el.classList.remove('drop-above', 'drop-below'));
+    dragState.bottomBar.classList.add('active');
+    dragState.inEdgeBar = 'bottom';
+    dragState.currentIndex = entries.length - 1;
+    return;
+  }
+  dragState.inEdgeBar = null;
+
+  let targetIndex = dragState.startIndex;                         // default: unchanged
+  let indicatorEntry = null;
+  let indicatorSide = null;                                       // 'above' or 'below'
+
+  /* walk entries in order, skipping the dragged row; stop at the first
+     non-dragging entry whose midline is below the pointer */
+  let placed = false;
+  for (let i = 0; i < entries.length; i++) {
+    const el = entries[i];
+    if (el === dragState.originalEntry) continue;
+    const rect = el.getBoundingClientRect();
+    const mid = rect.top + rect.height / 2;
+    if (y < mid) {
+      targetIndex = i;
+      /* dropping ABOVE entry i. If the original (still occupying its slot)
+         sits between i-1 and i, landing above entry i from the original's
+         old position means the same place — account for that by comparing
+         to startIndex below. */
+      if (i > dragState.startIndex) targetIndex -= 1;             // shift because the original will be removed from above
+      indicatorEntry = el;
+      indicatorSide = 'above';
+      placed = true;
+      break;
+    }
+  }
+  if (!placed) {
+    /* past everything → drop at the very bottom. The last non-dragging
+       entry gets a bottom bar. */
+    targetIndex = entries.length - 1;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i] !== dragState.originalEntry) { indicatorEntry = entries[i]; break; }
+    }
+    indicatorSide = 'below';
+    /* if original was already at the end, targetIndex should equal
+       startIndex → no move; fall through is fine */
+  }
+
+  /* repaint indicator */
+  document.querySelectorAll('#movie-list .entry.drop-above, #movie-list .entry.drop-below')
+    .forEach(el => el.classList.remove('drop-above', 'drop-below'));
+  if (indicatorEntry && targetIndex !== dragState.startIndex) {
+    indicatorEntry.classList.add(indicatorSide === 'above' ? 'drop-above' : 'drop-below');
+  }
+
+  dragState.currentIndex = targetIndex;
+}
+
+/* --- Auto-scroll ---
+   When the pointer is within EDGE_PX of the top or bottom of the viewport,
+   scroll the page in that direction at a speed proportional to how close.
+   Uses requestAnimationFrame so we don't hammer scroll; tick cancels itself
+   when the pointer pulls away from the edge.
+
+   Pinch-zoom note: the browser has two independent scroll states — the
+   layout scroll (window.scrollY) and the visual-viewport pan (what moves
+   when you one-finger-drag around while zoomed). window.scrollBy only
+   moves the layout; it can't pan the visual viewport. So when scrollBy
+   bottoms out at a document edge while the visual viewport still has room
+   to pan, we fall back to scrollIntoView on the edgemost entry —
+   scrollIntoView is allowed to pan the visual viewport. */
+const EDGE_PX = 70;
+const MAX_SCROLL_PX_PER_FRAME = 14;
+
+function updateAutoScroll() {
+  if (!dragState) return;
+
+  /* clientY is in layout-viewport coordinates. When pinch-zoomed, the
+     user's visible region is a sub-rect of the layout viewport, tracked
+     by visualViewport. The finger "at the edge of the screen" is at the
+     edge of the VISUAL viewport, not the layout one — so we translate
+     clientY into visual-viewport space before checking proximity. */
+  const vv = window.visualViewport;
+  const visHeight = vv ? vv.height      : window.innerHeight;
+  const visTop    = vv ? vv.offsetTop   : 0;
+  const yInVis    = dragState.pointerY - visTop;                    // 0 = top of visible area
+
+  let dir = 0;
+  if (yInVis < EDGE_PX)                    dir = -1 * (1 - yInVis / EDGE_PX);
+  else if (yInVis > visHeight - EDGE_PX)   dir = 1 * (1 - (visHeight - yInVis) / EDGE_PX);
+  dragState.autoScrollDir = dir;
+
+  if (dir !== 0 && !dragState.autoScrollFrame) {
+    const tick = () => {
+      if (!dragState || dragState.autoScrollDir === 0) {
+        if (dragState) dragState.autoScrollFrame = null;
+        return;
+      }
+      const delta = dragState.autoScrollDir * MAX_SCROLL_PX_PER_FRAME;
+
+      /* try layout-scroll first; cheap and smooth when not zoomed */
+      const beforeY = window.scrollY;
+      window.scrollBy(0, delta);
+      const layoutMoved = window.scrollY !== beforeY;
+
+      /* if layout scroll hit a document boundary, we may still be zoomed in
+         with the visual viewport partway through the page. Pan it toward
+         the list edge by scrolling the edgemost entry into view. */
+      if (!layoutMoved) {
+        const entries = document.querySelectorAll('#movie-list .entry');
+        if (entries.length) {
+          const target = delta < 0 ? entries[0] : entries[entries.length - 1];
+          target.scrollIntoView({ block: delta < 0 ? 'start' : 'end' });
+        }
+      }
+
+      /* scrolling changes which entry is under the pointer without a
+         pointermove event, so re-check the drop indicator (and bar
+         positions, since visualViewport offsets can shift) each frame */
+      positionEdgeBars();
+      updateDropIndicator();
+      dragState.autoScrollFrame = requestAnimationFrame(tick);
+    };
+    dragState.autoScrollFrame = requestAnimationFrame(tick);
+  }
+}
+
+function stopAutoScroll() {
+  if (dragState && dragState.autoScrollFrame) {
+    cancelAnimationFrame(dragState.autoScrollFrame);
+    dragState.autoScrollFrame = null;
+  }
+}
+
+async function commitReorder(orderedMovieIds) {
+  await fetch(API + '/list/' + listId + '/my-ranks', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ slot: mySlot, movieId: movieId, direction: direction })
+    body: JSON.stringify({ visitor_id: visitorId, ordered_movie_ids: orderedMovieIds })
   });
-
   await loadList();
 }
 
@@ -695,6 +996,8 @@ async function moveToEdge(movieId, direction) {
    instead of searching a separate comments array.
    ============================================================================ */
 
+let commentUnbindWidth = null;
+
 function expandComment(movieId, commentVisitorId) {
   expandedComment = { movieId: movieId, visitorId: commentVisitorId };
 
@@ -704,11 +1007,6 @@ function expandComment(movieId, commentVisitorId) {
   );
   if (!box) return;
 
-  /* Capture the pill's on-screen position BEFORE we change its class —
-     once .comment-expanded lands the CSS reposition makes the rect useless.
-     Used only as a fallback if visualViewport isn't available. */
-  const pillRect = box.getBoundingClientRect();
-
   /* add a dark backdrop behind the comment */
   const backdrop = document.createElement('div');
   backdrop.className = 'comment-backdrop';
@@ -717,20 +1015,11 @@ function expandComment(movieId, commentVisitorId) {
 
   box.classList.add('comment-expanded');
 
-  /* Center the popup on the user's *visible* viewport. Plain position:fixed
-     anchors to the layout viewport, which isn't where the user is looking
-     when they've pinch-zoomed or panned the page horizontally. visualViewport
-     tracks the actual visible area — override the CSS 50%/50% with its
-     center. If visualViewport isn't available, fall back to the pill's
-     own center so at least the popup appears near where they tapped. */
-  const vv = window.visualViewport;
-  if (vv) {
-    box.style.left = (vv.offsetLeft + vv.width / 2) + 'px';
-    box.style.top  = (vv.offsetTop  + vv.height / 2) + 'px';
-  } else {
-    box.style.left = (pillRect.left + pillRect.width  / 2) + 'px';
-    box.style.top  = (pillRect.top  + pillRect.height / 2) + 'px';
-  }
+  /* Position with the same CSS vars used by modals and the movie popup —
+     10% margins of the visible viewport; width tracks zoom live. */
+  applyViewportLayout(box);
+  if (commentUnbindWidth) commentUnbindWidth();
+  commentUnbindWidth = bindViewportWidthTracking(box);
 
   const isOurs = (commentVisitorId === visitorId);
 
@@ -753,6 +1042,18 @@ function expandComment(movieId, commentVisitorId) {
   } else {
     box.classList.add('comment-readonly');
   }
+
+  /* Top-right close X. Appended after the innerHTML for edit mode (so it
+     isn't wiped by the rebuild above) and added unconditionally for
+     readonly. Stops propagation so clicks don't bubble to the backdrop
+     ourselves — backdrop closes too, so it wouldn't matter, but this is
+     tidier in case a future handler cares. */
+  const xBtn = document.createElement('button');
+  xBtn.className = 'modal-close';
+  xBtn.setAttribute('aria-label', 'Close');
+  xBtn.textContent = '✕';
+  xBtn.addEventListener('click', (e) => { e.stopPropagation(); collapseComment(); });
+  box.appendChild(xBtn);
 }
 
 function collapseComment() {
@@ -761,10 +1062,16 @@ function collapseComment() {
   const box = document.querySelector('.comment-expanded');
   if (box) {
     box.classList.remove('comment-expanded', 'comment-readonly');
+    /* clear the CSS vars and inline style overrides set during expand */
+    box.style.removeProperty('--modal-top');
+    box.style.removeProperty('--modal-left');
+    box.style.removeProperty('--modal-width');
   }
 
   const backdrop = document.querySelector('.comment-backdrop');
   if (backdrop) backdrop.remove();
+
+  if (commentUnbindWidth) { commentUnbindWidth(); commentUnbindWidth = null; }
 
   expandedComment = null;
   loadList();                                                      // refresh to show updated text
@@ -919,7 +1226,9 @@ async function handleReadyToggle(tabVisitorId) {
    cast, and summary from TMDB. Cached after first fetch.
    ============================================================================ */
 
-async function showMoviePopup(tmdbId, mediaType, anchorEl) {
+let moviePopupUnbindWidth = null;   // cleanup fn for visualViewport listener
+
+async function showMoviePopup(tmdbId, mediaType) {
   /* TMDB movie and TV ID spaces overlap, so cache key must include media_type */
   const cacheKey = mediaType + ':' + tmdbId;
   if (!movieDetailCache[cacheKey]) {
@@ -961,6 +1270,7 @@ async function showMoviePopup(tmdbId, mediaType, anchorEl) {
   popup.dataset.mediaType = mediaType;
 
   popup.innerHTML = '<div class="popup-content">'
+    + '<button class="modal-close" aria-label="Close">✕</button>'
     + (posterUrl ? '<img src="' + posterUrl + '" class="popup-poster">' : '')
     + '<div class="popup-info">'
     + '<h3>' + escapeHtml(titleText) + ' (' + formatYear(dateText) + ')</h3>'
@@ -969,10 +1279,17 @@ async function showMoviePopup(tmdbId, mediaType, anchorEl) {
     + '<p>' + escapeHtml(detail.overview || 'No summary available.') + '</p>'
     + '</div></div>';
 
-  const rect = anchorEl.getBoundingClientRect();
-  popup.style.top = (rect.bottom + window.scrollY) + 'px';
-  popup.style.left = rect.left + 'px';
   popup.style.display = 'block';
+  const content = popup.querySelector('.popup-content');
+  applyViewportLayout(content);
+  if (moviePopupUnbindWidth) moviePopupUnbindWidth();
+  moviePopupUnbindWidth = bindViewportWidthTracking(content);
+
+  /* The popup-content click opens TMDB; the X cancels that and just closes. */
+  content.querySelector('.modal-close').addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideMoviePopup();
+  });
 }
 
 function hideMoviePopup() {
@@ -981,6 +1298,7 @@ function hideMoviePopup() {
   popup.innerHTML = '';
   delete popup.dataset.tmdbId;
   delete popup.dataset.mediaType;
+  if (moviePopupUnbindWidth) { moviePopupUnbindWidth(); moviePopupUnbindWidth = null; }
 }
 
 
@@ -1020,6 +1338,61 @@ function hideMoviePopup() {
        carries the blob through.
    ============================================================================ */
 
+/* ============================================================================
+   Popup sizing — visualViewport-aware (shared by all 4 popups)
+   ============================================================================
+   Three consumers: .modal-content (INFO + How-to), .popup-content (poster
+   info), and .comment-expanded (comment popup). All use the same three
+   CSS vars — --modal-top, --modal-left, --modal-width — set on the
+   element passed in.
+
+   applyViewportLayout() sets all three at open time.
+   applyViewportWidth()  sets only width + left; called on visualViewport
+     resize/scroll events so pinch-zoom live-rescales the popup.
+   We DON'T update `top` live because tall popups either (a) extend past
+     the bottom of the visible area with the surrounding overlay scrolling
+     to reveal them, or (b) have internal overflow — in either case,
+     moving `top` on every viewport scroll would fight that scroll.
+   ============================================================================ */
+
+function applyViewportLayout(el) {
+  if (!el) return;
+  const vv = window.visualViewport;
+  const w    = vv ? vv.width      : window.innerWidth;
+  const h    = vv ? vv.height     : window.innerHeight;
+  const offL = vv ? vv.offsetLeft : 0;
+  const offT = vv ? vv.offsetTop  : 0;
+  el.style.setProperty('--modal-left',  (offL + w * 0.10) + 'px');
+  el.style.setProperty('--modal-top',   (offT + h * 0.10) + 'px');
+  el.style.setProperty('--modal-width', (w * 0.80) + 'px');
+}
+
+function applyViewportWidth(el) {
+  if (!el) return;
+  const vv = window.visualViewport;
+  const w    = vv ? vv.width      : window.innerWidth;
+  const offL = vv ? vv.offsetLeft : 0;
+  el.style.setProperty('--modal-left',  (offL + w * 0.10) + 'px');
+  el.style.setProperty('--modal-width', (w * 0.80) + 'px');
+}
+
+function bindViewportWidthTracking(el) {
+  const onResize = () => applyViewportWidth(el);
+  const vv = window.visualViewport;
+  if (vv) {
+    vv.addEventListener('resize', onResize);
+    vv.addEventListener('scroll', onResize);
+  }
+  window.addEventListener('resize', onResize);
+  return () => {
+    if (vv) {
+      vv.removeEventListener('resize', onResize);
+      vv.removeEventListener('scroll', onResize);
+    }
+    window.removeEventListener('resize', onResize);
+  };
+}
+
 function openCopyPasteModal() {
   const modal = document.getElementById('copy-paste-modal');
   const visitorById = {};
@@ -1049,9 +1422,17 @@ function openCopyPasteModal() {
     + '</p>'
     + '</div>';
 
-  modal.style.display = 'flex';
+  modal.style.display = 'block';
+  const modalContent = modal.querySelector('.modal-content');
+  applyViewportLayout(modalContent);
+  const unbindWidth = bindViewportWidthTracking(modalContent);
+  const close = () => { unbindWidth(); closeCopyPasteModal(); };
 
-  modal.querySelector('.modal-close').addEventListener('click', closeCopyPasteModal);
+  modal.querySelector('.modal-close').addEventListener('click', close);
+
+  /* tap-outside-to-close: a click whose target IS the backdrop itself
+     (not a descendant) means the user tapped outside the white panel. */
+  modal.onclick = (e) => { if (e.target === modal) close(); };
 
   modal.querySelector('#copy-blob-btn').addEventListener('click', () => {
     navigator.clipboard.writeText(document.getElementById('details-blob').value);
@@ -1480,8 +1861,9 @@ function escapeHtml(text) {
    Called once from initApp(). Uses event delegation — one listener on a
    parent container handles clicks on any child, including ones added later.
 
-   NO DRAG EVENTS. The old pointerdown/pointermove/pointerup drag system is
-   gone. Instead, clicks on .arrow-up and .arrow-down call swapRank().
+   Also attaches the drag-start pointerdown handler to the grab handle.
+   The pointermove/up listeners are attached to the handle itself in
+   onGrabPointerDown so they naturally scope to that drag session.
    ============================================================================ */
 
 function setupEventListeners() {
@@ -1581,43 +1963,25 @@ function setupEventListeners() {
     renderList();
   });
 
-  /* --- MOVIE LIST: all click interactions --- */
+  /* --- MOVIE LIST: drag start + click interactions --- */
   const movieList = document.getElementById('movie-list');
 
+  /* Drag-to-reorder: pointerdown on a grab handle kicks off Section 8.
+     pointermove/up bind inside onGrabPointerDown so they live only for the
+     duration of the drag and can't leak across drags. */
+  movieList.addEventListener('pointerdown', e => {
+    if (e.target.closest('.grab-handle')) onGrabPointerDown(e);
+  });
+
   movieList.addEventListener('click', e => {
-    /* UP ARROW — move movie up one rank */
-    const arrowUp = e.target.closest('.arrow-up');
-    if (arrowUp) {
-      swapRank(parseInt(arrowUp.dataset.movieId), 'up');
-      return;
-    }
-
-    /* DOWN ARROW — move movie down one rank */
-    const arrowDown = e.target.closest('.arrow-down');
-    if (arrowDown) {
-      swapRank(parseInt(arrowDown.dataset.movieId), 'down');
-      return;
-    }
-
-    /* DOUBLE UP ARROW — move movie to #1 */
-    const arrowTop = e.target.closest('.arrow-top');
-    if (arrowTop) {
-      moveToEdge(parseInt(arrowTop.dataset.movieId), 'top');
-      return;
-    }
-
-    /* DOUBLE DOWN ARROW — move movie to last place */
-    const arrowBottom = e.target.closest('.arrow-bottom');
-    if (arrowBottom) {
-      moveToEdge(parseInt(arrowBottom.dataset.movieId), 'bottom');
-      return;
-    }
-
-    /* POSTER or TITLE — show popup (tap-to-preview).
-       Tapping the popup itself is what navigates to TMDB — handled below. */
-    const el = e.target.closest('.entry-poster, .entry-title');
-    if (el) {
-      showMoviePopup(parseInt(el.dataset.tmdbId), el.dataset.mediaType || 'movie', el);
+    /* POSTER or TITLE TEXT — show popup (tap-to-preview).
+       We target .entry-title-text (not the whole .entry-title) so clicks on
+       the row's whitespace next to the title don't fire the popup. Dataset
+       for tmdb_id/media_type lives on the parent .entry-title. */
+    const hit = e.target.closest('.entry-poster, .entry-title-text');
+    if (hit) {
+      const src = hit.classList.contains('entry-poster') ? hit : hit.closest('.entry-title');
+      showMoviePopup(parseInt(src.dataset.tmdbId), src.dataset.mediaType || 'movie');
       return;
     }
 
@@ -1639,25 +2003,18 @@ function setupEventListeners() {
     }
   });
 
-  /* Click the popup itself → open TMDB and dismiss. */
+  /* Movie popup click handling:
+     - click on the inner .popup-content card  → open TMDB in new tab, close
+     - click on the backdrop (anywhere else)    → just close */
   const moviePopup = document.getElementById('movie-popup');
-  moviePopup.addEventListener('click', () => {
-    const tmdbId = moviePopup.dataset.tmdbId;
-    const mt = moviePopup.dataset.mediaType || 'movie';
-    if (tmdbId) {
-      window.open('https://www.themoviedb.org/' + mt + '/' + tmdbId, '_blank');
+  moviePopup.addEventListener('click', (e) => {
+    if (e.target.closest('.popup-content')) {
+      const tmdbId = moviePopup.dataset.tmdbId;
+      const mt = moviePopup.dataset.mediaType || 'movie';
+      if (tmdbId) {
+        window.open('https://www.themoviedb.org/' + mt + '/' + tmdbId, '_blank');
+      }
     }
-    hideMoviePopup();
-  });
-
-  /* Any click outside the popup AND outside a movie poster/title dismisses
-     the popup. Clicks on a poster/title are allowed through so they can
-     re-show the popup for a different movie without a flicker. */
-  document.addEventListener('click', e => {
-    const popup = document.getElementById('movie-popup');
-    if (popup.style.display !== 'block') return;
-    if (e.target.closest('#movie-popup')) return;
-    if (e.target.closest('.entry-poster, .entry-title')) return;
     hideMoviePopup();
   });
 
@@ -1718,8 +2075,8 @@ function openHowToModal() {
 
     + '<p><strong>Search and add movies</strong> from TMDB in the search bar.</p>'
 
-    + '<p><strong>Rank movies</strong> on your tab with the arrows. '
-    + 'Double arrows jump to top/bottom.</p>'
+    + '<p><strong>Rank movies</strong> on your tab by dragging them by the '
+    + 'handle on the left. Drop between any two rows to reorder.</p>'
 
     + '<p><strong>Comment</strong> by tapping on '
     + '<span class="comment-box howto-demo-box" style="color:#1976d2">'
@@ -1752,10 +2109,15 @@ function openHowToModal() {
     + 'to start a new list.</p>'
     + '</div>';
 
-  modal.style.display = 'flex';
-  modal.querySelector('.modal-close').addEventListener('click', () => {
-    modal.style.display = 'none';
-  });
+  modal.style.display = 'block';
+  const modalContent = modal.querySelector('.modal-content');
+  applyViewportLayout(modalContent);
+  const unbindWidth = bindViewportWidthTracking(modalContent);
+  const closeIt = () => { unbindWidth(); modal.style.display = 'none'; };
+  modal.querySelector('.modal-close').addEventListener('click', closeIt);
+  /* tap-outside-to-close on the backdrop (target === modal means the click
+     landed on the overlay itself, not on the white panel inside). */
+  modal.onclick = (e) => { if (e.target === modal) closeIt(); };
 
   /* Live color-dot in the demo: opens the real native color picker, which
      only exists in the DOM when the user has a name. */

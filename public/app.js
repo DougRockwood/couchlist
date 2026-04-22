@@ -101,7 +101,6 @@ function initApp() {
     return loadList();
   }).then(() => {
     setupEventListeners();
-    pinEdgeButtonsToViewport();
     console.log('app.js BUILD details-paste');
     document.title = 'CouchList';
 
@@ -1760,51 +1759,7 @@ function openHowToModal() {
 
 
 /* ============================================================================
-   SECTION 16: EDGE-BUTTON PINNING — keep INFO + How-to buttons on screen
-   ============================================================================
-   The page is now horizontally scrollable (entries can be wider than the
-   viewport) and pinch-zoomable. Plain `position: fixed` anchors to the
-   layout viewport — on mobile that drifts away from where the user is
-   actually looking. Instead, switch the two corner buttons to
-   `position: absolute` and reposition them in *document* coordinates on
-   every scroll/pinch tick so they track the visible area.
-   ============================================================================ */
-
-function pinEdgeButtonsToViewport() {
-  const vv = window.visualViewport;
-  if (!vv) return;
-  const info = document.getElementById('copy-paste-btn');
-  const howTo = document.getElementById('how-to-btn');
-  if (!info || !howTo) return;
-
-  const margin = 16;
-  const left   = vv.pageLeft;
-  const right  = vv.pageLeft + vv.width;
-  const bottom = vv.pageTop  + vv.height;
-
-  info.style.position = 'absolute';
-  info.style.left     = (left + margin) + 'px';
-  info.style.top      = (bottom - info.offsetHeight - margin) + 'px';
-  info.style.right    = 'auto';
-  info.style.bottom   = 'auto';
-
-  howTo.style.position = 'absolute';
-  howTo.style.left     = (right - howTo.offsetWidth - margin) + 'px';
-  howTo.style.top      = (bottom - howTo.offsetHeight - margin) + 'px';
-  howTo.style.right    = 'auto';
-  howTo.style.bottom   = 'auto';
-}
-
-if (window.visualViewport) {
-  window.visualViewport.addEventListener('scroll', pinEdgeButtonsToViewport);
-  window.visualViewport.addEventListener('resize', pinEdgeButtonsToViewport);
-}
-window.addEventListener('scroll', pinEdgeButtonsToViewport, { passive: true });
-window.addEventListener('resize', pinEdgeButtonsToViewport);
-
-
-/* ============================================================================
-   SECTION 17: STARTUP
+   SECTION 16: STARTUP
    ============================================================================ */
 
 initApp();

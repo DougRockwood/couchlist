@@ -819,6 +819,11 @@ function renderUserTabs() {
       + '</div>';
   }
 
+  /* Action tabs — INFO + How to use. Gray pills at the far right of the
+     tab bar. Intercepted in the tab click handler via data-action. */
+  html += '<div class="tab tab-action" data-action="info">INFO</div>';
+  html += '<div class="tab tab-action" data-action="howto">How to use</div>';
+
   html += '<span id="name-warning" style="display:none"></span>';
 
   tabBar.innerHTML = html;
@@ -1510,6 +1515,14 @@ function setupEventListeners() {
       return;
     }
 
+    /* action tabs (INFO / How to use) — open their modal, don't change view */
+    const actionTab = e.target.closest('.tab[data-action]');
+    if (actionTab) {
+      if (actionTab.dataset.action === 'info')  openCopyPasteModal();
+      if (actionTab.dataset.action === 'howto') openHowToModal();
+      return;
+    }
+
     /* tab body → switch active view */
     const tab = e.target.closest('.tab');
     if (tab) handleTabClick(tab.dataset.tab);
@@ -1654,11 +1667,8 @@ function setupEventListeners() {
     }
   });
 
-  /* --- COPY/PASTE BUTTON --- */
-  document.getElementById('copy-paste-btn').addEventListener('click', openCopyPasteModal);
-
-  /* --- HOW-TO BUTTON --- */
-  document.getElementById('how-to-btn').addEventListener('click', openHowToModal);
+  /* INFO / How-to-use live as tabs now; their click handlers are in the
+     tab-bar delegator above. */
 }
 
 

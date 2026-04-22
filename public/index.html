@@ -39,7 +39,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>What Do You Wanna Watch?</title>
-  <link rel="stylesheet" href="style.css?v=popup400">
+  <link rel="stylesheet" href="style.css?v=actiontabs1">
 </head>
 <body>
 
@@ -101,14 +101,8 @@
 
     <div id="movie-list"></div>
 
-    <!-- ================================================================
-         COPY/PASTE BUTTON — bottom of the screen
-         ================================================================
-         Always visible. Clicking opens the Copy/Paste modal.
-         ================================================================ -->
-
-    <button id="copy-paste-btn">INFO</button>
-    <button id="how-to-btn">How to use</button>
+    <!-- INFO + How-to-use live as tabs at the right of #tab-bar, built by
+         renderUserTabs(). No standalone buttons anymore. -->
 
   </div>
 
@@ -153,7 +147,7 @@
        the URL, checks the cookie, fetches data, and renders everything.
        ================================================================== -->
 
-  <script src="app.js?v=revertpin1"></script>
+  <script src="app.js?v=actiontabs1"></script>
 
 </body>
 </html>

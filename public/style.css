@@ -208,7 +208,8 @@ html, body {
   height: 34px;
 }
 
-.tab-couch {
+.tab-couch,
+.tab-action {
   padding: 0 16px;
   color: #333;
 }
@@ -577,23 +578,8 @@ html, body {
    export, and import.
    ============================================================================ */
 
-#copy-paste-btn {
-  position: fixed;
-  bottom: 16px;
-  left: 16px;
-  padding: 8px 16px;
-  background: #f0f0f0;
-  color: #333;
-  border: 1px solid #bbb;
-  border-radius: 8px;
-  font-size: 13px;
-  cursor: pointer;
-  z-index: 90;
-}
-
-#copy-paste-btn:hover {
-  background: #e0e0e0;
-}
+/* #copy-paste-btn / #how-to-btn removed: INFO + How-to-use are now tabs
+   in #tab-bar (see .tab-action). */
 
 #copy-paste-modal {
   display: none;
@@ -727,22 +713,7 @@ html, body {
   margin: 10px 2px 0 2px;
 }
 
-/* How-to button mirrors the Details button but pinned to the bottom-right. */
-#how-to-btn {
-  position: fixed;
-  bottom: 16px;
-  right: 16px;
-  padding: 8px 16px;
-  background: #f0f0f0;
-  color: #333;
-  border: 1px solid #bbb;
-  border-radius: 8px;
-  font-size: 13px;
-  cursor: pointer;
-  z-index: 90;
-}
-
-#how-to-btn:hover { background: #e0e0e0; }
+/* #how-to-btn removed — now a .tab-action pill in the tab bar. */
 
 #how-to-modal {
   display: none;

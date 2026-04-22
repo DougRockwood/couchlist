@@ -894,7 +894,7 @@ html, body {
   border: 1px solid #bbb;
   border-radius: 10px;
   box-shadow: 0 8px 30px rgba(0,0,0,0.35);
-  max-width: 400px;
+  width: 400px;
   overflow: hidden;
   cursor: pointer;
 }
@@ -910,6 +910,7 @@ html, body {
   height: auto;
   border-radius: 6px;
   flex-shrink: 0;
+  align-self: flex-start;   /* preserve native aspect; don't stretch to row height */
 }
 
 .popup-info {

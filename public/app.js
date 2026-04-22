@@ -688,11 +688,10 @@ function expandComment(movieId, commentVisitorId) {
   );
   if (!box) return;
 
-  /* scroll so this entry is ~1/6 from the top of the screen */
-  const entry = box.closest('.entry');
-  const targetY = window.innerHeight / 6;
-  const entryTop = entry.getBoundingClientRect().top;
-  window.scrollBy(0, entryTop - targetY);
+  /* Capture the pill's on-screen position BEFORE we change its class —
+     once .comment-expanded lands the CSS reposition makes the rect useless.
+     Used only as a fallback if visualViewport isn't available. */
+  const pillRect = box.getBoundingClientRect();
 
   /* add a dark backdrop behind the comment */
   const backdrop = document.createElement('div');
@@ -701,6 +700,21 @@ function expandComment(movieId, commentVisitorId) {
   document.body.appendChild(backdrop);
 
   box.classList.add('comment-expanded');
+
+  /* Center the popup on the user's *visible* viewport. Plain position:fixed
+     anchors to the layout viewport, which isn't where the user is looking
+     when they've pinch-zoomed or panned the page horizontally. visualViewport
+     tracks the actual visible area — override the CSS 50%/50% with its
+     center. If visualViewport isn't available, fall back to the pill's
+     own center so at least the popup appears near where they tapped. */
+  const vv = window.visualViewport;
+  if (vv) {
+    box.style.left = (vv.offsetLeft + vv.width / 2) + 'px';
+    box.style.top  = (vv.offsetTop  + vv.height / 2) + 'px';
+  } else {
+    box.style.left = (pillRect.left + pillRect.width  / 2) + 'px';
+    box.style.top  = (pillRect.top  + pillRect.height / 2) + 'px';
+  }
 
   const isOurs = (commentVisitorId === visitorId);
 

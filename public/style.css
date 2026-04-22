@@ -56,13 +56,12 @@ html, body {
    Full width on every screen size — entries go edge to edge.
    ============================================================================ */
 
-/* #app sizes itself to its widest movie entry (a row with lots of
-   comments) but never narrower than the viewport. The tab bar has its
-   own inner horizontal scroll and doesn't contribute to this width.
-   When an entry exceeds the viewport the page pans horizontally; the
-   frozen top rows pan with it. */
+/* #app sizes itself to its widest movie entry. The tab bar has its own
+   inner horizontal scroll and doesn't contribute to this width. When the
+   row is narrower than the viewport, #app centers with whitespace on
+   both sides; when wider, the page pans horizontally and the frozen
+   top rows pan with it. */
 #app {
-  min-width: 100%;
   width: max-content;
   margin: 0 auto;
   min-height: 100vh;
@@ -116,7 +115,7 @@ html, body {
 
 #search-box {
   flex: 1;
-  min-width: 0;
+  min-width: 220px;
   padding: 10px 14px;
   font-size: 16px;
   border: 1px solid #bbb;
@@ -395,16 +394,24 @@ html, body {
    comment row sideways). The rank number is always on the left.
    ============================================================================ */
 
+/* Grid layout so the five entry columns (rank, poster, title, comments,
+   X) stay aligned across rows AND size to the widest content in each
+   column. minmax(auto, N) caps the two wrapping columns so long titles
+   and long comments wrap instead of stretching the whole list sideways.
+   Short content shrinks the column, eliminating dead space. */
 #movie-list {
   flex: 1;
   padding: 0 4px;
+  display: grid;
+  grid-template-columns: auto auto minmax(auto, 150px) minmax(auto, 130px) auto;
 }
 
 .entry {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: flex-start;
-  gap: 1px;
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
+  align-items: start;
+  column-gap: 1px;
   padding: 8px;
   border-bottom: 1px solid #ccc;
   position: relative;
@@ -499,6 +506,9 @@ html, body {
    A cloned, absolutely-positioned copy of the dragged row that follows the
    pointer. pointer-events:none so it can't intercept its own events. */
 
+/* The floater is cloned out of #movie-list onto document.body, so its
+   subgrid has nothing to inherit from. Pin an explicit grid template
+   that matches the subgrid caps so the clone renders identically. */
 .drag-floater {
   position: fixed;
   left: 0;
@@ -509,6 +519,7 @@ html, body {
   background: #fff;
   z-index: 1000;
   border-bottom: 1px solid #ccc;
+  grid-template-columns: auto auto minmax(auto, 150px) minmax(auto, 130px) auto;
 }
 
 /* --- Edge action bars ---
@@ -570,12 +581,12 @@ html, body {
 }
 
 /* --- Title ---
-   Fixed 150px column so the comments column always starts at the same
-   x-offset regardless of title length. Long titles wrap within the
-   column; short titles leave trailing space. */
+   Column width is managed by #movie-list's grid (caps at 150px, shrinks
+   if all titles are shorter). min-width:0 lets the grid column resize
+   below min-content so long titles wrap inside the cap. */
 
 .entry-title {
-  flex: 0 0 150px;
+  min-width: 0;
   font-size: 14px;
   padding-top: 4px;
   cursor: pointer;
@@ -628,7 +639,7 @@ html, body {
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
-  flex-shrink: 0;
+  min-width: 0;
 }
 
 .comment-box {
@@ -730,8 +741,6 @@ html, body {
   font-size: 16px;
   cursor: pointer;
   padding: 4px;
-  flex-shrink: 0;
-  margin-left: auto;
 }
 
 .remove-btn:hover {
@@ -1101,6 +1110,14 @@ html, body {
 
   #app {
     padding: 20px 0;
+  }
+
+  #movie-list {
+    grid-template-columns: auto auto minmax(auto, 200px) minmax(auto, 320px) auto;
+  }
+
+  .drag-floater {
+    grid-template-columns: auto auto minmax(auto, 200px) minmax(auto, 320px) auto;
   }
 
   .entry {

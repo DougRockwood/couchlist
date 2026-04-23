@@ -1,37 +1,38 @@
 /* ============================================================================
-   style.css — whatdoyouwannawatch.com
+   style.css — couchlist.org
    ============================================================================
-   All visual styling for the app. Mobile-first — the base styles target a
-   phone in portrait orientation (~375px wide). Desktop overrides are at the
-   bottom in a @media block.
+   All visual styling for the app.
 
-   No frameworks, no preprocessors, no CSS-in-JS. Just plain CSS.
+   LAYOUT MODEL (the WidthPercent redesign — see CLAUDE.md / project memory):
 
-   The HTML is minimal (index.html is just named containers). app.js builds
-   all the inner HTML dynamically. So every class name referenced here is
-   created by app.js, not written in index.html.
+     Everything lives inside #app, which is full-bleed (width:100%, no max).
+     The movie list is a CSS Grid with six tracks sized in `fr` units:
 
-   LAYOUT (top to bottom on a phone):
-     #app              — full-width container, centered on desktop
-     #frozen-top       — sticky wrapper: tab bar + search row stay pinned
-       #tab-scroll     — overflow-x:auto so many visitors scroll in place
-         #tab-bar      — horizontal row of visitor tabs
-       #search-area    — search box + INFO/Help buttons on one row
-         #search-box   — text input, grows to fill row
-         #search-results — dropdown overlay below the search box
-     #movie-list       — main scrolling area, fills remaining height
-     .entry            — one movie row: rank | poster | title | comments | remove
-     #copy-paste-btn   — fixed bottom-left button
-     #copy-paste-modal — fullscreen overlay
-     #movie-popup      — floating info card
+         grab(7.5)  rank(7.5)  poster(10)  title(30)  comments(37.5)  X(7.5)
+
+     `fr` units are fractions of available space. The six tracks total 100,
+     so each "1fr" equals 1% of the grid's width. The grid is 100% of the
+     viewport, so each track is the same percentage of the viewport.
+
+     The phone (portrait) is the design target. Desktop uses the SAME
+     percentages — posters/comments/etc just scale up. We may revisit on
+     desktop later, but no per-breakpoint geometry overrides for now.
+
+     Every cell is a grid item that controls its own internal layout. Two
+     "filler" cells (.entry-grab and .entry-remove) are always rendered, even
+     when empty, so columns never shift between tabs.
+
+     The tab bar above the grid lives in its own horizontal scroller (so a
+     long visitor list doesn't widen the page). Its width is independent of
+     the movie grid below.
+
+   No frameworks, no preprocessors. Everything app.js writes uses the class
+   names defined here — index.html is just empty named containers.
    ============================================================================ */
 
 
 /* ============================================================================
    SECTION 1: RESET AND BASE
-   ============================================================================
-   Kill default margins/padding. Set a clean base font. Use border-box so
-   padding doesn't add to element widths (critical for mobile layouts).
    ============================================================================ */
 
 *, *::before, *::after {
@@ -47,23 +48,24 @@ html, body {
   background: #ffffff;
   color: #222;
   -webkit-tap-highlight-color: transparent;
+  /* Belt-and-suspenders: nothing in the layout should ever be wider than
+     the viewport, but if a long word ever forces overflow we want the page
+     to clip it horizontally rather than letting the layout viewport widen
+     and trigger the "initial pinch-zoom + sticky-disappears" symptom. */
+  overflow-x: hidden;
 }
 
 
 /* ============================================================================
    SECTION 2: APP CONTAINER
    ============================================================================
-   Full width on every screen size — entries go edge to edge.
+   #app is full-bleed: every cell of the grid below is a percentage of the
+   viewport width, so #app simply spans the viewport.
    ============================================================================ */
 
-/* #app sizes itself to its widest movie entry. The tab bar has its own
-   inner horizontal scroll and doesn't contribute to this width. When the
-   row is narrower than the viewport, #app centers with whitespace on
-   both sides; when wider, the page pans horizontally and the frozen
-   top rows pan with it. */
 #app {
-  width: max-content;
-  margin: 0 auto;
+  width: 100%;
+  margin: 0;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -71,17 +73,13 @@ html, body {
 
 
 /* ============================================================================
-   SECTION 3: SEARCH AREA
+   SECTION 3: FROZEN TOP — tab bar + search row, sticky to viewport top
    ============================================================================
-   Sticky at the top of the page so the user can always search without
-   scrolling back up. The search box is a simple text input. The results
-   dropdown appears below it as an absolute-positioned overlay so it
-   doesn't push the list down.
+   The tab bar gets its own horizontal scroller so it can grow as wide as
+   it wants without forcing the page wider. The search row below is exactly
+   the page's width and uses an 80/10/10 flex split.
    ============================================================================ */
 
-/* #frozen-top is the spreadsheet-style frozen header: tab bar + search row
-   stay pinned to the top of the viewport while the movie list scrolls
-   beneath. Background is opaque so scrolling entries don't show through. */
 #frozen-top {
   position: sticky;
   top: 0;
@@ -90,9 +88,6 @@ html, body {
   width: 100%;
 }
 
-/* Tab row gets its own horizontal scroll. Because overflow:auto creates a
-   scroll container, #tab-bar's intrinsic width no longer forces the page
-   wider — the site width is now driven only by the movie rows below. */
 #tab-scroll {
   overflow-x: auto;
   overflow-y: hidden;
@@ -102,20 +97,22 @@ html, body {
 #search-area {
   position: relative;
   background: #ffffff;
-  padding: 12px 12px 0;
+  padding: 6px 6px 0;
 }
 
-/* Search + INFO/Help buttons sit on one row. The input takes all remaining
-   space; the two buttons sit flush right, sized tight around their text. */
+/* Search input grows to fill, INFO/Help take ~10% each. min-width:0 on the
+   input is the magic incantation that lets a flex child shrink below its
+   intrinsic min-content width — without it the 10% caps on the buttons
+   silently lose to the input's preferred width. */
 #search-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 #search-box {
-  flex: 1;
-  min-width: 220px;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 10px 14px;
   font-size: 16px;
   border: 1px solid #bbb;
@@ -125,13 +122,18 @@ html, body {
   outline: none;
 }
 
-/* Craigslist-blue outlined rectangles next to the search box. Rounded
-   corners (not fully round like tabs). Same 14px text as tabs; padding
-   kept tight so the box hugs the label. */
+#search-box:focus { border-color: #e94560; }
+#search-box::placeholder { color: #999; }
+
+/* Craigslist-blue outlined squares next to the search box. flex-basis 10%
+   keeps them proportional to the page; flex:0:0 means they neither grow
+   nor shrink past that. */
 .action-btn {
+  flex: 0 0 10%;
   display: inline-flex;
   align-items: center;
-  padding: 4px 8px;
+  justify-content: center;
+  padding: 8px 4px;
   font-size: 14px;
   font-weight: 500;
   color: #0000ee;
@@ -140,18 +142,10 @@ html, body {
   border-radius: 6px;
   cursor: pointer;
   user-select: none;
-  flex-shrink: 0;
   white-space: nowrap;
-  box-sizing: border-box;
 }
 
-.action-btn:hover {
-  background: #f0f0ff;
-}
-
-#search-box:focus {
-  border-color: #e94560;
-}
+.action-btn:hover { background: #f0f0ff; }
 
 #welcome-msg {
   padding: 10px 14px;
@@ -160,20 +154,15 @@ html, body {
   text-align: center;
 }
 
-#search-box::placeholder {
-  color: #999;
-}
-
 /* --- Search Results Dropdown ---
-   Positioned absolutely so it overlays the list below without pushing
-   content down. Each result row has a tiny poster thumbnail + title.
-   ============================================================================ */
+   Absolute overlay below the search box so it doesn't push the list down.
+   Each result is a tiny poster + title row. */
 
 #search-results {
   position: absolute;
   top: 100%;
-  left: 12px;
-  right: 12px;
+  left: 6px;
+  right: 6px;
   background: #ffffff;
   border: 1px solid #bbb;
   border-top: none;
@@ -193,13 +182,8 @@ html, body {
   border-bottom: 1px solid #e0e0e0;
 }
 
-.search-result:last-child {
-  border-bottom: none;
-}
-
-.search-result:hover {
-  background: #f0f0f0;
-}
+.search-result:last-child { border-bottom: none; }
+.search-result:hover { background: #f0f0f0; }
 
 .search-thumb {
   width: 30px;
@@ -209,7 +193,6 @@ html, body {
   flex-shrink: 0;
 }
 
-/* small pill shown next to TV results in the search dropdown */
 .tv-badge {
   display: inline-block;
   margin-left: 6px;
@@ -226,109 +209,105 @@ html, body {
 /* ============================================================================
    SECTION 4: TAB BAR
    ============================================================================
-   A horizontal row of tabs that scrolls sideways if there are too many
-   visitors to fit. Each tab shows a visitor's name + a small color swatch.
-   The active tab is highlighted. Dimmed tabs (toggled out of the Couch vote)
-   are faded.
+   Tabs are taller than wide — the WidthPercent redesign moved the color dot
+   and RDY toggle ABOVE the username instead of beside it, so the tabs use
+   vertical space instead of horizontal.
 
-   On the far right: either a name input field (if the visitor hasn't
-   entered a name yet) or a hidden color picker.
+   Visitor tab layout (a 3x2 grid):
+       [ color-dot ]  [ flexible gap ]  [ RDY-button ]
+       [ -------- name (centered, spans all 3 cols) -------- ]
+
+   When the username is short, the gap collapses and the tab is roughly
+   square (one circle wide on each side). When it's long, the username row
+   pushes the whole tab wider and the gap expands to keep the dots at the
+   corners.
+
+   Couch tab is a single big-font label. Same height as visitor tabs;
+   minimum width = height (square); long enough text stretches it wider.
    ============================================================================ */
 
-/* The tab bar scrolls sideways inside #tab-scroll when too many visitors
-   are added. Its intrinsic width is whatever its flex children need; the
-   surrounding scroll container caps how much of that is visible. */
 #tab-bar {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 10px 12px;
+  padding: 8px 6px;
   white-space: nowrap;
   width: max-content;
 }
 
+/* Shared tab base. Concrete tab variants below set their own display/grid. */
 .tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  height: 68px;                       /* 2x the old 34px — fills more vertical space */
+  border-radius: 15px;                /* circle radius (14) + border (1) */
   padding: 3px;
-  border-radius: 17px;
-  background: #e6e6e6;
-  color: #333;
-  font-size: 14px;
   cursor: pointer;
   user-select: none;
   flex-shrink: 0;
-  height: 34px;
-}
-
-.tab-couch {
-  padding: 0 16px;
+  font-size: 14px;
+  background: #e6e6e6;
   color: #333;
 }
 
+/* Couch tab: big label centered. Min-width = height keeps the smallest
+   form square; the big font usually pushes it wider. */
+.tab-couch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 68px;
+  padding: 0 8px;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+/* Visitor tab: 3-column / 2-row grid. Row 1 has the dots at the outer
+   columns; row 2 is the username spanning all three. The middle column
+   is `1fr` so it absorbs whatever extra width the username forces. */
 .tab-user {
+  display: inline-grid;
+  grid-template-columns: 28px 1fr 28px;
+  grid-template-rows: 28px 1fr;
+  align-items: center;
+  justify-items: center;
+  column-gap: 2px;
+  row-gap: 2px;
+  min-width: 60px;                    /* 28 + 2 + 28 + 2px padding margin */
   color: #fff;
   text-shadow: 0 1px 2px rgba(0,0,0,0.55);
 }
 
+/* Active-tab ring: white halo + brand-blue outer ring. Pure box-shadow so
+   it sits outside the layout box and doesn't shift sizing. */
 .tab-active {
   box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #0000ee;
 }
 
-.tab-dimmed {
-  opacity: 0.45;
-}
+/* Dimmed tab = visitor's vote excluded from the Couch-tab Borda count. */
+.tab-dimmed { opacity: 0.45; }
 
-/* Left circle on a user tab: same color as the tab background, so it's
-   essentially invisible until hovered. Clicking your own opens the native
-   <input type="color"> picker. */
+/* Color circle (top-left of a visitor tab). Same color as the tab body
+   by default — the user can click their own dot to open the native color
+   picker. The hover hint is what tells you it's clickable. */
 .tab-color-dot {
+  grid-column: 1;
+  grid-row: 1;
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  flex-shrink: 0;
   border: 1px solid rgba(0,0,0,0.2);
 }
 
-.tab-mine .tab-color-dot {
-  cursor: pointer;
-}
-
+.tab-mine .tab-color-dot { cursor: pointer; }
 .tab-mine .tab-color-dot:hover {
   filter: brightness(1.12);
   border-color: rgba(255,255,255,0.6);
 }
 
-.tab-name {
-  padding: 0 4px;
-  font-weight: 500;
-}
-
-.tab-name-input {
-  background: transparent;
-  border: none;
-  outline: none;
-  color: #fff;
-  font: inherit;
-  font-weight: 500;
-  padding: 0 4px;
-  width: 66px;
-  text-align: center;
-  text-shadow: inherit;
-}
-
-.tab-name-input::placeholder {
-  color: rgba(255,255,255,0.7);
-}
-
-.tab-name-input:focus {
-  background: rgba(255,255,255,0.12);
-  border-radius: 10px;
-}
-
-/* Right circle: ready-toggle. Replaces the old long-press gesture. */
+/* RDY/NAW toggle (top-right of a visitor tab). */
 .tab-ready-btn {
+  grid-column: 3;
+  grid-row: 1;
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -338,37 +317,62 @@ html, body {
   font-size: 10px;
   font-weight: bold;
   cursor: pointer;
-  flex-shrink: 0;
   color: #fff;
   letter-spacing: 0.3px;
   text-shadow: none;
   border: 1px solid rgba(0,0,0,0.25);
 }
 
-.tab-ready-btn.ready {
-  background: #2a9d3f;
+.tab-ready-btn.ready     { background: #2a9d3f; }
+.tab-ready-btn.not-ready { background: #c0392b; }
+
+/* Username row — spans all three columns at the bottom. */
+.tab-name,
+.tab-user .tab-name-input {
+  grid-column: 1 / 4;
+  grid-row: 2;
+  width: 100%;
+  text-align: center;
+  font-weight: 500;
+  font-size: 14px;
+  padding: 0 4px;
 }
 
-.tab-ready-btn.not-ready {
-  background: #c0392b;
+.tab-name-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #fff;
+  font: inherit;
+  text-shadow: inherit;
 }
 
-/* Brand-new visitor tab: no color / buttons yet, just the name entry. */
+.tab-name-input::placeholder { color: rgba(255,255,255,0.7); }
+
+.tab-name-input:focus {
+  background: rgba(255,255,255,0.12);
+  border-radius: 6px;
+}
+
+/* Brand-new visitor tab (no name yet → no dots, just an input centered). */
 .tab-new {
-  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 100px;
   padding: 3px 10px;
+  background: #ffffff;
   border: 1px solid #bbb;
 }
 
 .tab-new .tab-name-input {
   color: #222;
   text-shadow: none;
-  width: 140px;
+  width: 130px;
+  text-align: center;
 }
 
-.tab-new .tab-name-input::placeholder {
-  color: #999;
-}
+.tab-new .tab-name-input::placeholder { color: #999; }
 
 #name-warning {
   color: #e94560;
@@ -378,89 +382,70 @@ html, body {
 
 
 /* ============================================================================
-   SECTION 5: MOVIE LIST AND ENTRIES
+   SECTION 5: MOVIE LIST (the percentage grid)
    ============================================================================
-   The main content area. Each .entry is one movie row.
+   Six fr-tracks totalling 100 — one fr equals one percent of the grid's
+   width, which is also the page's width. Every .entry uses subgrid so its
+   six cells align perfectly with the parent grid's tracks.
 
-   Entry layout (left to right):
-     .entry-rank     — rank number + optional drag handle + optional tie label
-     .entry-poster   — small poster image (92px wide from TMDB)
-     .entry-title    — movie title + year
-     .entry-comments — horizontal row of comment boxes
-     .remove-btn     — small X button (only if you added this movie)
-
-   On a phone, the title keeps a readable floor width; if the comments
-   don't fit alongside it they scroll horizontally in place (drag the
-   comment row sideways). The rank number is always on the left.
+   Track totals:
+     A 7.5  grab handle (or empty placeholder cell)
+     B 7.5  rank number
+     C 10   poster
+     D 30   title (+ adder badge below)
+     E 37.5 comments stack
+     F 7.5  remove X (or empty placeholder cell)
    ============================================================================ */
 
-/* Grid layout so the five entry columns (rank, poster, title, comments,
-   X) stay aligned across rows AND size to the widest content in each
-   column. minmax(auto, N) caps the two wrapping columns so long titles
-   and long comments wrap instead of stretching the whole list sideways.
-   Short content shrinks the column, eliminating dead space. */
 #movie-list {
   flex: 1;
-  padding: 0 4px;
+  width: 100%;
   display: grid;
-  grid-template-columns: auto auto minmax(auto, 150px) minmax(auto, 130px) auto;
+  grid-template-columns: 7.5fr 7.5fr 10fr 30fr 37.5fr 7.5fr;
 }
 
+/* Each row is itself a 6-column grid that inherits column widths from
+   #movie-list (subgrid). align-items:stretch lets the title cell stretch
+   to the row height (which the poster sets) so the adder badge can pin to
+   the bottom edge of the title cell, lined up with the poster's bottom. */
 .entry {
   display: grid;
   grid-template-columns: subgrid;
   grid-column: 1 / -1;
-  align-items: start;
-  column-gap: 1px;
-  padding: 8px;
+  align-items: stretch;
+  padding: 8px 0;
   border-bottom: 1px solid #ccc;
   position: relative;
-  transition: transform 0.1s ease, box-shadow 0.1s ease;
+  background: #ffffff;
 }
 
-/* --- Rank number column ---
-   On your own tab: [grab-handle] [rank-number].
-   On other tabs:   [rank-number]. */
+/* --- Column A: grab handle (or empty) ---
+   Always rendered; on other-people's tabs it's an empty cell whose only
+   job is to keep column widths from shifting when you switch tabs. */
 
-.entry-rank {
+.entry-grab {
   display: flex;
-  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  min-width: 36px;
-  min-height: 69px;
-  flex-shrink: 0;
+  padding: 0 2px;
 }
-
-.rank-number {
-  font-size: 32px;
-  font-weight: bold;
-  color: #0000ee;
-  min-width: 34px;
-  text-align: center;
-}
-
-/* --- Grab handle ---
-   Square, nearly as tall as a poster (69px), so it's a generous finger
-   target. `touch-action: none` is critical: it tells the browser this
-   element owns vertical drags, so a downward finger swipe on the handle
-   starts a drag instead of scrolling the page. */
 
 .grab-handle {
-  width: 36px;
-  height: 60px;
+  width: 100%;
+  height: 100%;
+  min-height: 50px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #eee;
   border-radius: 4px;
   color: #666;
-  font-size: 22px;
+  font-size: 18px;
   cursor: grab;
-  user-select: none;
+  /* `touch-action: none` is essential — it tells the browser this element
+     owns vertical drags. Without it, a downward finger on the handle
+     scrolls the page instead of starting a drag. */
   touch-action: none;
-  flex-shrink: 0;
 }
 
 .grab-handle:active,
@@ -474,27 +459,204 @@ html, body {
   pointer-events: none;
 }
 
-/* --- Drag states ---
-   .dragging       → this row is the one being dragged. Its rank number
-                     disappears and the handle dims; the row stays in place
-                     looking empty so its slot is obvious.
-   .drop-above     → drop target: gap above this row gets a thick black bar.
-   .drop-below     → drop target: gap below this row gets a thick black bar
-                     (used when dropping at the very bottom, past the last
-                     non-dragging row). */
+/* --- Column B: rank number ---
+   clamp() scales the digits with the viewport without needing a media
+   query. 5vw is roughly 21px on a Pixel 8 (412 CSS px) and grows to the
+   60px cap on big desktops. Three-digit ranks fit; "1" sits centered with
+   whitespace on either side, which is fine. */
 
-.entry.dragging .rank-number,
-.entry.dragging .grab-handle,
-.entry.dragging .entry-poster,
-.entry.dragging .entry-title,
-.entry.dragging .entry-comments,
-.entry.dragging .remove-btn {
-  visibility: hidden;
+.entry-rank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 2px;
 }
+
+.rank-number {
+  font-size: clamp(20px, 5vw, 60px);
+  font-weight: bold;
+  color: #0000ee;
+  line-height: 1;
+  text-align: center;
+}
+
+/* --- Column C: poster ---
+   Image is 100% wide and height:auto, so the aspect ratio of the source
+   image (TMDB w92 = 92x138, 2:3) drives the rendered height. align-self
+   start keeps the poster pinned to the top of the row when the title
+   cell wraps long titles into a taller cell. */
+
+.entry-poster {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.entry-poster img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 4px;
+}
+
+.no-poster {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  background: #eee;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  font-size: 20px;
+}
+
+/* --- Column D: title + adder badge ---
+   Title text wraps inside the cell as needed. The bottom row (adder badge
+   + optional tie label) is pinned to the bottom of the cell via
+   justify-content:space-between, which works because align-items:stretch
+   on .entry stretches this cell to the row's full height (set by the
+   poster on its left).
+
+   min-width:0 is the same flex-shrink unlock as the search box — without
+   it the cell refuses to shrink below the title's intrinsic min-content
+   width and breaks the percentage layout. */
+
+.entry-title {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 4px 6px 0 6px;
+  font-size: 14px;
+  cursor: pointer;
+  color: #0000ee;
+  overflow-wrap: anywhere;
+}
+
+.entry-title-text {
+  /* content sized — bottom row uses margin-top:auto via the parent's
+     space-between, so this needs no special anchoring */
+}
+
+.entry-title-bottom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.entry-added-by {
+  width: 21px;                        /* 75% of the 28px tab color-dot */
+  height: 21px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+  border: 1px solid rgba(0,0,0,0.2);
+  flex-shrink: 0;
+}
+
+.tie-label {
+  font-size: 9px;
+  color: #888;
+  white-space: nowrap;
+}
+
+/* --- Column E: comments ---
+   Stacked vertically. Each comment pill is up to 100% of the cell width —
+   long comments ellipsize at the cell's right edge. min-width:0 on both
+   container and pill (via max-width:100%) lets the cell honor the 37.5%
+   track instead of expanding to fit nowrap content. */
+
+.entry-comments {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 6px;
+}
+
+.comment-box {
+  font-size: 12px;
+  padding: 4px 8px;
+  background: #f7f7f7;
+  border-radius: 6px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid #ccc;
+}
+
+/* --- Column F: remove X (or empty placeholder) --- */
+
+.entry-remove {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 4px 2px 0 2px;
+}
+
+.remove-btn {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+}
+
+.remove-btn:hover { color: #e94560; }
+
+
+/* ============================================================================
+   SECTION 6: DRAG TO REORDER  (transform-the-original — no clone)
+   ============================================================================
+   The dragged row IS the row — we don't clone it. While dragging:
+
+     - The original entry stays in its grid slot (so the layout doesn't
+       shift; column widths and row heights remain identical).
+     - We translateY() it via JS to follow the pointer. transform is a
+       paint-only operation, so the row visually leaves its slot but still
+       occupies its layout space — leaving a "gap" where it used to sit.
+     - z-index lifts it above its siblings, opacity + box-shadow give the
+       lift-off feel.
+     - pointer-events:none lets us hit-test the row UNDER the floating
+       row when finding drop targets. The handle keeps capture via
+       setPointerCapture, so it still receives all pointer events for the
+       active drag id.
+
+   This replaces the previous clone-onto-body approach which couldn't keep
+   its column widths in sync with the page (subgrid's parent wasn't there).
+   ============================================================================ */
+
+.entry.dragging {
+  z-index: 1000;
+  opacity: 0.9;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+  pointer-events: none;
+  cursor: grabbing;
+  /* transform: translateY(...) is set inline by the drag JS each frame */
+}
+
+/* Drop indicators — JS toggles these on the entry that the pointer is
+   currently above (drop-above) or, when the pointer is past the last row,
+   below (drop-below). */
 
 .entry.drop-above {
   border-top: 3px solid #000;
-  margin-top: -2px;                 /* absorb the extra 2px so layout doesn't jump */
+  margin-top: -2px;                   /* absorb the 2 extra pixels */
 }
 
 .entry.drop-below {
@@ -502,32 +664,11 @@ html, body {
   margin-bottom: -2px;
 }
 
-/* --- Drag floater ---
-   A cloned, absolutely-positioned copy of the dragged row that follows the
-   pointer. pointer-events:none so it can't intercept its own events. */
-
-/* The floater is cloned out of #movie-list onto document.body, so its
-   subgrid has nothing to inherit from. Pin an explicit grid template
-   that matches the subgrid caps so the clone renders identically. */
-.drag-floater {
-  position: fixed;
-  left: 0;
-  right: 0;
-  pointer-events: none;
-  opacity: 0.9;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
-  background: #fff;
-  z-index: 1000;
-  border-bottom: 1px solid #ccc;
-  grid-template-columns: auto auto minmax(auto, 150px) minmax(auto, 130px) auto;
-}
-
-/* --- Edge action bars ---
-   Appear only during a drag, pinned to the VISIBLE top and bottom of the
-   viewport (positioned via JS in layout coordinates derived from
-   visualViewport, so they stay anchored to what the user actually sees
-   even when pinch-zoomed). Dropping inside either bar jumps the movie to
-   rank 1 or last, regardless of where the finger landed in the list. */
+/* Edge action bars — fullscreen-wide overlays at the visible top and
+   bottom edges. Pinned to visualViewport coords via JS so they stay glued
+   to what the user actually sees, even when pinch-zoomed. Releasing inside
+   either bar jumps to rank 1 or last regardless of where the finger
+   landed in the list. */
 
 .drag-edge-bar {
   position: fixed;
@@ -545,220 +686,17 @@ html, body {
 }
 
 .drag-edge-bar.active {
-  background: #e94560;        /* couchlist accent: clear "release to commit" signal */
+  background: #e94560;                /* "release to commit" signal */
 }
-
-.tie-label {
-  font-size: 9px;
-  color: #888;
-  white-space: nowrap;
-}
-
-/* --- Poster thumbnail --- */
-
-.entry-poster {
-  flex-shrink: 0;
-  cursor: pointer;
-}
-
-.entry-poster img {
-  width: 46px;
-  height: 69px;
-  object-fit: cover;
-  border-radius: 4px;
-}
-
-.no-poster {
-  width: 46px;
-  height: 69px;
-  background: #eee;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #666;
-  font-size: 20px;
-}
-
-/* --- Title ---
-   Column width is managed by #movie-list's grid (caps at 150px, shrinks
-   if all titles are shorter). min-width:0 lets the grid column resize
-   below min-content so long titles wrap inside the cap. */
-
-.entry-title {
-  min-width: 0;
-  font-size: 14px;
-  padding-top: 4px;
-  cursor: pointer;
-  color: #0000ee;
-  /* column layout: title text at the top, adder badge pinned to the bottom
-     so it aligns with the bottom of the 69px poster on its left. */
-  display: flex;
-  flex-direction: column;
-  min-height: 69px;
-}
-
-.entry-title-text {
-  /* content-sized; badge below uses margin-top:auto to push to the bottom */
-}
-
-/* Bottom row inside .entry-title: [adder badge] [optional tie label].
-   margin-top:auto pushes it to the bottom of the title column so it aligns
-   with the bottom of the 69px poster on its left. */
-.entry-title-bottom {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: auto;
-  align-self: flex-start;
-}
-
-.entry-added-by {
-  width: 21px;                                                   /* 75% of the 28px tab color-dot */
-  height: 21px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
-  border: 1px solid rgba(0,0,0,0.2);
-  flex-shrink: 0;
-}
-
-/* --- Comment boxes ---
-   One vertical column alongside the title; each comment pill stacks below
-   the previous. Row height grows with the commenter count so every comment
-   stays readable without horizontal scroll. */
-
-.entry-comments {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  min-width: 0;
-}
-
-.comment-box {
-  font-size: 12px;
-  padding: 4px 8px;
-  background: #f7f7f7;
-  border-radius: 6px;
-  max-width: 130px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-  border: 1px solid #ccc;
-  flex-shrink: 0;
-}
-
-/* --- Comment expanded state ---
-   When you tap a comment, it grows to ~2/3 screen height.
-   If it's yours, a textarea + Done button appear inside.
-   If it's someone else's, it becomes scrollable read-only.
-   ============================================================================ */
-
-.comment-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 199;
-}
-
-/* Uses the same CSS vars as .modal-content and .popup-content — set by
-   positionModal()/bindModalWidthTracking() on expand. Fixed positioning
-   so it sits above the backdrop; 80vw of the visible viewport width,
-   top at 10vh below the visible top. */
-.comment-expanded {
-  position: fixed;
-  top:   var(--modal-top,   10vh);
-  left:  var(--modal-left,  10vw);
-  width: var(--modal-width, 80vw);
-  max-width: none;
-  height: auto;
-  min-height: 270px;
-  max-height: 80vh;
-  white-space: normal;
-  overflow-y: auto;
-  z-index: 200;
-  background: #ffffff;
-  border: 2px solid #e94560;
-  border-radius: 10px;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  transform: none;
-}
-
-/* Read-only comment popup (viewing someone else's comment): bump text
-   size ~20% so it's comfortable to read. Editing your own comment uses
-   the textarea's fixed 18px, so this doesn't affect edit mode. */
-.comment-expanded.comment-readonly {
-  font-size: 1.2em;
-}
-
-.comment-edit {
-  flex: 1;
-  width: 100%;
-  font-size: 18px;
-  padding: 8px;
-  border: 1px solid #bbb;
-  border-radius: 6px;
-  background: #ffffff;
-  color: #222;
-  resize: none;
-  margin-top: 8px;
-  font-family: inherit;
-}
-
-.comment-done-btn {
-  align-self: flex-end;
-  margin-top: 8px;
-  padding: 8px 20px;
-  background: #e94560;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.comment-readonly {
-  white-space: normal;
-  overflow-y: auto;
-}
-
-/* --- Remove button --- */
-
-.remove-btn {
-  background: none;
-  border: none;
-  color: #666;
-  font-size: 16px;
-  cursor: pointer;
-  padding: 4px;
-}
-
-.remove-btn:hover {
-  color: #e94560;
-}
-
-/* (drag styles removed — replaced by arrow buttons) */
 
 
 /* ============================================================================
-   SECTION 6: COPY / PASTE BUTTON AND MODAL
+   SECTION 7: COPY/PASTE (Details) MODAL
    ============================================================================
-   The button is fixed to the bottom-left corner, always visible.
-   The modal is a fullscreen overlay with sections for ID management,
-   export, and import.
+   Fullscreen overlay scrolls as one piece. Card position/width is set in
+   JS via CSS vars (positionModal / bindModalWidthTracking) so it tracks
+   the visual viewport and stays usable when pinch-zoomed.
    ============================================================================ */
-
-/* INFO + Help live as outlined buttons in #search-row (see .action-btn). */
 
 #copy-paste-modal {
   display: none;
@@ -766,16 +704,10 @@ html, body {
   inset: 0;
   background: rgba(0,0,0,0.85);
   z-index: 300;
-  overflow-y: auto;         /* overlay scrolls when modal is taller than viewport */
+  overflow-y: auto;
   overflow-x: hidden;
 }
 
-/* .modal-content is positioned by JS (positionModal) based on the VISUAL
-   viewport at open time — 10% margins of what the user actually sees,
-   which differs from layout vw/vh units when pinch-zoomed. Using
-   position:absolute inside the scrollable overlay means the modal scrolls
-   with the overlay as one piece (no internal scrollbar). CSS vars below
-   are fallbacks before JS runs. */
 .modal-content {
   background: #ffffff;
   border-radius: 12px;
@@ -798,9 +730,7 @@ html, body {
   cursor: pointer;
 }
 
-.modal-section {
-  margin-bottom: 20px;
-}
+.modal-section { margin-bottom: 20px; }
 
 .modal-section h3 {
   font-size: 14px;
@@ -842,11 +772,7 @@ html, body {
   margin-top: 4px;
 }
 
-/* Details modal: welcome text + big editable blob + Copy/Apply buttons.
-   Width inherited from .modal-content (80vw). */
-.details-modal {
-  /* no max-width — defer to .modal-content */
-}
+.details-modal { /* width inherited from .modal-content */ }
 
 .modal-welcome {
   font-size: 12px;
@@ -899,6 +825,11 @@ html, body {
   margin: 10px 2px 0 2px;
 }
 
+
+/* ============================================================================
+   SECTION 8: HOW-TO MODAL
+   ============================================================================ */
+
 #how-to-modal {
   display: none;
   position: fixed;
@@ -910,7 +841,6 @@ html, body {
 }
 
 .howto-modal {
-  /* no max-width — defer to .modal-content */
   line-height: 1.5;
 }
 
@@ -926,8 +856,6 @@ html, body {
   margin: 14px 0 4px 0;
 }
 
-/* Even, generous spacing between paragraphs so each line reads as its own
-   section — the inline demos used to blow out line height unpredictably. */
 .howto-modal p {
   font-size: 13px;
   color: #333;
@@ -936,7 +864,6 @@ html, body {
   position: relative;
 }
 
-/* Bullet in front of every section line except the outro. */
 .howto-modal p:not(.howto-newlist)::before {
   content: "•";
   position: absolute;
@@ -946,14 +873,11 @@ html, body {
   font-weight: bold;
 }
 
-.howto-modal p.howto-newlist {
-  padding-left: 0;
-}
+.howto-modal p.howto-newlist { padding-left: 0; }
 
 .howto-modal strong { color: #000; }
 
-/* Inert mini comment-box used as a visual example inside the How-to modal.
-   Mirrors the real .comment-box look but shrinks it and disables hover/cursor. */
+/* Inline mini comment-pill demo inside the How-to text. */
 .howto-modal .howto-demo-box {
   display: inline-block;
   vertical-align: middle;
@@ -965,10 +889,9 @@ html, body {
 }
 .howto-modal .howto-demo-box strong { color: inherit; }
 
-/* Inline demos of real tab elements (blank tab, color dot, Couch tab, RDY
-   button). They inherit look from .tab / .tab-color-dot / .tab-ready-btn
-   but get shrunk to ~50% here so they sit cleanly in paragraph text
-   instead of forcing tall, uneven line heights. */
+/* Inline live-demo bits (mini tab, color dot, RDY pill) inside the How-to.
+   These mirror real .tab / .tab-color-dot / .tab-ready-btn but are scaled
+   to ~50% so they sit cleanly in paragraph text. */
 .howto-modal .howto-demo-tab,
 .howto-modal .howto-demo-dot,
 .howto-modal .howto-demo-rdy {
@@ -978,21 +901,18 @@ html, body {
 .howto-modal .howto-demo-dot { display: inline-block; }
 .howto-modal .howto-demo-tab,
 .howto-modal .howto-demo-tab .tab-name-input,
-.howto-modal .howto-demo-rdy {
-  cursor: default;
-}
-.howto-modal .howto-demo-tab .tab-name-input {
-  pointer-events: none;
-}
+.howto-modal .howto-demo-rdy { cursor: default; }
+.howto-modal .howto-demo-tab .tab-name-input { pointer-events: none; }
 .howto-modal .howto-demo-rdy-active { cursor: pointer; }
 .howto-modal .howto-demo-dot[data-howto-action="color"]:hover {
   filter: brightness(1.12);
   border-color: rgba(0,0,0,0.4);
 }
 
-/* 50%-scale overrides for the live demo elements. Real sizes: tab 34px/14px,
-   color dot 28px, RDY 28px/10px, tab-couch padding 0 16px. */
+/* 50%-scale overrides for the demo elements. */
 .howto-modal .howto-demo-tab {
+  display: inline-flex;
+  align-items: center;
   height: 18px;
   padding: 2px 6px;
   gap: 3px;
@@ -1001,21 +921,33 @@ html, body {
 }
 .howto-modal .howto-demo-tab.tab-couch {
   padding: 0 8px;
+  font-size: 12px;
 }
 .howto-modal .howto-demo-dot,
 .howto-modal .howto-demo-tab .tab-color-dot {
   width: 14px;
   height: 14px;
+  /* Inside howto-demo-tab the dot must NOT inherit the grid-area placement
+     from .tab-color-dot — these demo tabs are inline-flex, not grid. */
+  grid-column: auto;
+  grid-row: auto;
 }
 .howto-modal .howto-demo-tab .tab-name-input {
   width: 80px;
   font-size: 10px;
+  /* same grid-area override */
+  grid-column: auto;
+  grid-row: auto;
+  text-align: center;
 }
 .howto-modal .howto-demo-rdy {
   width: 16px;
   height: 16px;
   font-size: 7px;
   letter-spacing: 0;
+  /* same grid-area override */
+  grid-column: auto;
+  grid-row: auto;
 }
 
 .howto-modal .howto-newlist {
@@ -1026,17 +958,82 @@ html, body {
 
 .howto-modal .howto-newlist a { color: #1976d2; }
 
-@media (min-width: 700px) {
-  .howto-modal .howto-demo-box { font-size: 12px; }
+
+/* ============================================================================
+   SECTION 9: COMMENT EXPAND
+   ============================================================================
+   Tapping a comment expands it. Backdrop dims everything; the box is sized
+   with the same modal CSS vars so it tracks the visual viewport.
+   ============================================================================ */
+
+.comment-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 199;
+}
+
+.comment-expanded {
+  position: fixed;
+  top:   var(--modal-top,   10vh);
+  left:  var(--modal-left,  10vw);
+  width: var(--modal-width, 80vw);
+  max-width: none;
+  height: auto;
+  min-height: 270px;
+  max-height: 80vh;
+  white-space: normal;
+  overflow-y: auto;
+  z-index: 200;
+  background: #ffffff;
+  border: 2px solid #e94560;
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.comment-expanded.comment-readonly {
+  font-size: 1.2em;
+}
+
+.comment-edit {
+  flex: 1;
+  width: 100%;
+  font-size: 18px;
+  padding: 8px;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #222;
+  resize: none;
+  margin-top: 8px;
+  font-family: inherit;
+}
+
+.comment-done-btn {
+  align-self: flex-end;
+  margin-top: 8px;
+  padding: 8px 20px;
+  background: #e94560;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.comment-readonly {
+  white-space: normal;
+  overflow-y: auto;
 }
 
 
 /* ============================================================================
-   SECTION 7: MOVIE INFO POPUP
+   SECTION 10: MOVIE INFO POPUP
    ============================================================================
-   Floating card that appears on hover (desktop) or long-press (phone).
-   Shows the large poster, director, cast, and plot summary from TMDB.
-   Positioned absolutely by app.js near the element that triggered it.
+   Hover (desktop) / long-press (phone) overlay with poster + cast + plot.
+   Same modal-vars sizing as the other overlays.
    ============================================================================ */
 
 #movie-popup {
@@ -1049,10 +1046,6 @@ html, body {
   overflow-x: hidden;
 }
 
-/* The card inside the backdrop. Sized just like .modal-content: CSS vars
-   set by openModalLayout()/bindModalWidthTracking() in JS so it tracks
-   the visual viewport (pinch-zoom aware). Tapping the card opens TMDB;
-   tapping the backdrop around it closes. */
 .popup-content {
   position: absolute;
   top:   var(--modal-top,   10vh);
@@ -1074,7 +1067,7 @@ html, body {
   height: auto;
   border-radius: 6px;
   flex-shrink: 0;
-  align-self: flex-start;   /* preserve native aspect; don't stretch to row height */
+  align-self: flex-start;
 }
 
 .popup-info {
@@ -1092,53 +1085,4 @@ html, body {
   font-size: 12px;
   color: #555;
   margin-bottom: 6px;
-}
-
-
-/* ============================================================================
-   SECTION 8: DESKTOP OVERRIDES
-   ============================================================================
-   On screens wider than 700px, give the app a bit of breathing room.
-   The layout doesn't change much — the max-width on #app already handles
-   centering. These are just small tweaks for mouse-based interaction.
-   ============================================================================ */
-
-@media (min-width: 700px) {
-  html, body {
-    font-size: 20px;                                               /* 25% bigger base (16→20) */
-  }
-
-  #app {
-    padding: 20px 0;
-  }
-
-  #movie-list {
-    grid-template-columns: auto auto minmax(auto, 200px) minmax(auto, 320px) auto;
-  }
-
-  .drag-floater {
-    grid-template-columns: auto auto minmax(auto, 200px) minmax(auto, 320px) auto;
-  }
-
-  .entry {
-    padding: 10px 12px;
-  }
-
-  .entry-title {
-    font-size: 18px;
-  }
-
-  .comment-box {
-    font-size: 16px;
-    max-width: 320px;
-  }
-
-  .comment-expanded {
-    min-height: 320px;
-    font-size: 18px;                /* desktop base; .comment-readonly still adds 1.2× */
-  }
-
-  .comment-edit {
-    font-size: 22px;
-  }
 }

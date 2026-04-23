@@ -531,32 +531,34 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
   entry.className = 'entry';
   entry.dataset.movieId = movie.id;
 
-  /* 1. RANK NUMBER + optional drag handle.
-     On our own tab a square grab handle sits left of the number. Pointerdown
-     on it starts a drag (see Section 8). The handle gets `touch-action:none`
-     so finger drags don't get stolen by the browser scroll — but the rest of
-     the row keeps default touch-action, so tapping elsewhere still scrolls.
-     The "tied N-M" label used to live here but now sits next to the adder
-     circle at the bottom of the title column (see step 3). */
+  /* The row is six grid cells in order:
+       grab | rank | poster | title | comments | remove
+     The grab and remove cells are always emitted so column widths stay
+     stable when switching tabs (a row without these cells would otherwise
+     shift its remaining cells leftward into columns 1 and 5).
+
+     1. GRAB CELL — handle on your own tab, empty placeholder elsewhere.
+     The handle gets `touch-action:none` so finger drags on it start a drag
+     instead of scrolling the page; the rest of the row keeps default
+     touch-action so taps elsewhere still scroll. */
+  const grabHtml = (isMyTab && mySlot)
+    ? '<div class="entry-grab">'
+        + '<div class="grab-handle" data-movie-id="' + movie.id + '" aria-label="Drag to reorder">'
+        + '<span class="grab-icon">&#9776;</span>'        /* ☰ three-bars icon */
+        + '</div>'
+      + '</div>'
+    : '<div class="entry-grab"></div>';
+
+  /* 2. RANK NUMBER. The "tied N-M" label is rendered down in step 4
+     next to the adder badge under the title. */
+  const rankHtml = '<div class="entry-rank">'
+    + '<span class="rank-number">' + position + '</span>'
+    + '</div>';
+
   const tieHtml = tieLabel
     ? '<span class="tie-label">tied ' + tieLabel + '</span>' : '';
 
-  let rankHtml;
-  if (isMyTab && mySlot) {
-    rankHtml = '<div class="entry-rank">'
-      + '<div class="grab-handle" data-movie-id="' + movie.id + '" aria-label="Drag to reorder">'
-      + '<span class="grab-icon">&#9776;</span>'           /* ☰ three-bars icon */
-      + '</div>'
-      + '<span class="rank-number">' + position + '</span>'
-      + '</div>';
-  } else {
-    /* read-only rank number */
-    rankHtml = '<div class="entry-rank">'
-      + '<span class="rank-number">' + position + '</span>'
-      + '</div>';
-  }
-
-  /* 2. POSTER THUMBNAIL — media_type rides along so popup/link can hit the right TMDB endpoint */
+  /* 3. POSTER THUMBNAIL — media_type rides along so popup/link can hit the right TMDB endpoint */
   const posterUrl = movie.poster
     ? TMDB_IMG + 'w92' + movie.poster
     : '';
@@ -566,12 +568,10 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
     + (posterUrl ? '<img src="' + posterUrl + '">' : '<div class="no-poster">?</div>')
     + '</div>';
 
-  /* 3. TITLE + ADDER BADGE (+ optional TIE LABEL)
-     The title column houses the title text at the top and a bottom row
-     pinned to the bottom of the column. That bottom row contains the small
-     circular adder badge (color + initial) and, on the Couch tab only, the
-     "tied N-M" label to its right. Pinning both to the bottom makes them
-     line up with the bottom of the 69px poster on the left. */
+  /* 4. TITLE + ADDER BADGE (+ optional TIE LABEL)
+     The title cell stretches to the row's height (set by the poster cell
+     to its left); justify-content:space-between in the CSS pushes the
+     bottom row to align with the poster's bottom edge. */
   const adder = visitorById[movie.added_by];
   const adderName = adder ? (adder.name || '') : '';
   const adderInitial = adderName.trim().charAt(0).toUpperCase() || '?';
@@ -595,7 +595,7 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
     + titleBottomHtml
     + '</div>';
 
-  /* 4. COMMENTS — read directly from the movie row's userN_comment columns.
+  /* 5. COMMENTS — read directly from the movie row's userN_comment columns.
      We iterate through all occupied slots and show any non-null comments.
      The movie adder's comment goes first. */
   let commentsHtml = '<div class="entry-comments">';
@@ -641,40 +641,49 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
   }
   commentsHtml += '</div>';
 
-  /* 5. REMOVE BUTTON — only if we added this movie */
-  let removeHtml = '';
-  if (movie.added_by === visitorId) {
-    removeHtml = '<button class="remove-btn" data-movie-id="' + movie.id + '">✕</button>';
-  }
+  /* 6. REMOVE CELL — wrapper is always emitted so column F's width never
+     shifts; the X button lives inside only when this is your movie. */
+  const removeHtml = '<div class="entry-remove">'
+    + (movie.added_by === visitorId
+        ? '<button class="remove-btn" data-movie-id="' + movie.id + '">✕</button>'
+        : '')
+    + '</div>';
 
-  entry.innerHTML = rankHtml + posterHtml + titleHtml + commentsHtml + removeHtml;
+  entry.innerHTML = grabHtml + rankHtml + posterHtml + titleHtml + commentsHtml + removeHtml;
   return entry;
 }
 
 
 /* ============================================================================
-   SECTION 8: DRAG TO REORDER
+   SECTION 8: DRAG TO REORDER  (transform-the-original — no clone)
    ============================================================================
    On your own tab each row has a grab handle. Pointerdown on it starts a
-   drag; pointermove follows the finger/cursor; pointerup commits the new
-   order to the server via /api/list/:id/my-ranks.
+   drag; pointermove translates the row to follow the finger; pointerup
+   commits the new order to the server via /api/list/:id/my-ranks.
 
-   Key design points (why this isn't the old broken drag):
-     - Only the handle is draggable, not the whole row. Easy to target.
-     - The list does NOT re-render during a drag. We clone the row into a
-       floater and move the CLONE; the real DOM stays exactly as it was
-       when the drag started. The only in-place change is toggling classes
-       on entries to show the drop indicator.
-     - No server call happens until the drop. One trip, one source of truth.
-     - Auto-scroll near viewport edges is a simple rAF loop that calls
-       window.scrollBy — browsers don't do this for custom pointer drags.
-     - touch-action:none on the handle means the browser doesn't steal the
-       pointer for its own scroll gesture when the finger moves vertically.
+   The dragged row IS the row — we don't clone. While dragging:
+     - The original entry stays in its grid slot, so column widths and row
+       heights remain identical to every other row (no layout shift).
+     - We `transform: translateY(...)` it each frame to follow the pointer.
+       Transform is a paint-only operation, so the row visually leaves its
+       slot but still occupies its layout space — leaving a "gap" exactly
+       where it used to sit.
+     - z-index lifts it above its siblings; the .dragging CSS class adds
+       the lift-off look (opacity/shadow) and pointer-events:none so
+       elementFromPoint can find the row UNDER the floating one.
+     - The handle keeps pointer events via setPointerCapture, so the drag
+       continues even though the entry around it is pointer-events:none.
+
+   No server call until the drop. One trip, one source of truth. Auto-scroll
+   near viewport edges is a simple rAF loop. touch-action:none on the
+   handle means the browser doesn't steal the gesture for its own scroll.
    ============================================================================ */
 
-let dragState = null;     /* { movieId, originalEntry, floater, orderedMovieIds,
-                              startIndex, currentIndex, pointerY,
-                              autoScrollDir, autoScrollFrame } */
+let dragState = null;     /* { movieId, originalEntry, handle, pointerId,
+                              orderedMovieIds, startIndex, currentIndex,
+                              startEntryTop, grabOffsetY, pointerY,
+                              autoScrollDir, autoScrollFrame,
+                              topBar, bottomBar, inEdgeBar, edgeBarHeight } */
 
 function onGrabPointerDown(e) {
   if (e.button !== undefined && e.button !== 0) return;           // left click / primary touch only
@@ -695,16 +704,13 @@ function onGrabPointerDown(e) {
   const orderedMovieIds = entries.map(el => parseInt(el.dataset.movieId));
   const startIndex = entries.indexOf(entry);
 
-  /* build a visual clone that follows the pointer */
+  /* No clone. The row itself is the floater. Track the pointer in PAGE
+     coords (clientY + scrollY) so auto-scroll during the drag doesn't
+     cause the row to drift away from the finger. */
   const rect = entry.getBoundingClientRect();
-  const floater = entry.cloneNode(true);
-  floater.classList.add('drag-floater');
-  floater.classList.remove('dragging', 'drop-above', 'drop-below');
-  floater.style.height = rect.height + 'px';
-  floater.style.top = rect.top + 'px';
-  document.body.appendChild(floater);
-
-  entry.classList.add('dragging');                                // hides contents, leaves the gap
+  const startPointerPageY = e.clientY + window.scrollY;
+  entry.classList.add('dragging');
+  entry.style.willChange = 'transform';                           // hint the browser to GPU-promote
 
   /* build the two edge bars — pinned to the visible top/bottom each frame */
   const topBar = document.createElement('div');
@@ -721,9 +727,7 @@ function onGrabPointerDown(e) {
     originalEntry: entry,
     handle: handle,
     pointerId: e.pointerId,
-    floater: floater,
-    floaterHeight: rect.height,
-    grabOffsetY: e.clientY - rect.top,                            // keep handle under finger
+    startPointerPageY: startPointerPageY,                          // page-coord pointer Y at drag start
     orderedMovieIds: orderedMovieIds,
     startIndex: startIndex,
     currentIndex: startIndex,
@@ -745,13 +749,23 @@ function onGrabPointerDown(e) {
 function onDragPointerMove(e) {
   if (!dragState || e.pointerId !== dragState.pointerId) return;
   dragState.pointerY = e.clientY;
-
-  /* move the floater so the point under the finger stays the same */
-  dragState.floater.style.top = (e.clientY - dragState.grabOffsetY) + 'px';
+  applyDragTransform();
 
   positionEdgeBars();
   updateDropIndicator();
   updateAutoScroll();
+}
+
+/* Translate the original row by however far the pointer has moved in PAGE
+   coordinates (clientY + scrollY) since drag start. Page coords mean the
+   transform stays correct even when the page scrolls underneath us during
+   auto-scroll — the layout slot of the row doesn't move when the page
+   scrolls, so we want translation to track absolute pointer movement. */
+function applyDragTransform() {
+  if (!dragState) return;
+  const currentPointerPageY = dragState.pointerY + window.scrollY;
+  const deltaY = currentPointerPageY - dragState.startPointerPageY;
+  dragState.originalEntry.style.transform = 'translateY(' + deltaY + 'px)';
 }
 
 function onDragPointerUp(e) {
@@ -764,9 +778,10 @@ function onDragPointerUp(e) {
   /* tear down drag UI first, regardless of whether anything changed */
   stopAutoScroll();
   dragState.originalEntry.classList.remove('dragging');
+  dragState.originalEntry.style.transform = '';
+  dragState.originalEntry.style.willChange = '';
   document.querySelectorAll('#movie-list .entry.drop-above, #movie-list .entry.drop-below')
     .forEach(el => el.classList.remove('drop-above', 'drop-below'));
-  dragState.floater.remove();
   dragState.topBar.remove();
   dragState.bottomBar.remove();
   const handle = dragState.handle;
@@ -976,7 +991,11 @@ function updateAutoScroll() {
 
       /* scrolling changes which entry is under the pointer without a
          pointermove event, so re-check the drop indicator (and bar
-         positions, since visualViewport offsets can shift) each frame */
+         positions, since visualViewport offsets can shift) each frame.
+         applyDragTransform also runs every frame so the translated row
+         keeps tracking the pointer's page-coord position as the page
+         scrolls underneath. */
+      applyDragTransform();
       positionEdgeBars();
       updateDropIndicator();
       dragState.autoScrollFrame = requestAnimationFrame(tick);
@@ -1122,11 +1141,17 @@ function findCommentText(movieId, vid) {
 /* ============================================================================
    SECTION 10: USER TABS AND COUCH TOGGLE
    ============================================================================
-   Tab bar: [ Couch ]  [ Doug ■ ]  [ Percy ■ ]  ...  [ name-input ■ ]
+   Tab bar: [ Couch List ]  [ Doug ]  [ Percy ]  [ You ]  ...
+
+   Tabs after Couch are in slot order — slot 1 first, slot 10 last. Slot
+   number IS join order (server.js assigns the next free slot when a
+   visitor first joins a list), so this puts visitors left-to-right in the
+   order they joined. Your own tab sits in line with everyone else.
 
    Click a tab → switch view to that visitor's ranking.
-   Long-press → toggle them in/out of the Couch vote (dimmed = excluded).
    ============================================================================ */
+
+const NAME_MAX_LEN = 12;                          // matches the maxlength on the input
 
 function renderUserTabs() {
   const tabBar = document.getElementById('tab-bar');
@@ -1136,28 +1161,24 @@ function renderUserTabs() {
   html += '<div class="tab tab-couch' + (activeTab === 'couch' ? ' tab-active' : '') + '" '
     + 'data-tab="couch">Couch List</div>';
 
-  /* one tab per other visitor (not us) in slot order */
+  /* one tab per visitor in slot order — including your own */
   const sortedSlots = Object.keys(listData.visitors).sort((a, b) => a - b);
   sortedSlots.forEach(slot => {
     const v = listData.visitors[slot];
-    if (v.id === visitorId) return;
-    html += buildVisitorTab(v, false);
+    html += buildVisitorTab(v, v.id === visitorId);
   });
 
-  /* your own tab */
   if (visitor) {
-    html += buildVisitorTab(visitor, true);
     html += '<input type="color" id="color-picker" value="' + escapeHtml(visitor.color) + '" '
       + 'style="display:none">';
   } else {
-    /* brand new visitor — no name yet. Tab has just the name input. */
+    /* brand new visitor — no slot yet, no row above to render. Add a
+       lone "Type your name" tab so they can join. */
     html += '<div class="tab tab-mine tab-new">'
       + '<input id="name-input" class="tab-name-input" type="text" '
-      + 'placeholder="Type your name" autocomplete="off">'
+      + 'placeholder="Type your name" autocomplete="off" maxlength="' + NAME_MAX_LEN + '">'
       + '</div>';
   }
-
-  /* INFO + Help buttons live in #search-row now, not the tab bar. */
 
   html += '<span id="name-warning" style="display:none"></span>';
 
@@ -1176,18 +1197,18 @@ function buildVisitorTab(v, isMe) {
   let html = '<div class="' + classes.join(' ') + '" data-tab="' + v.id + '" '
     + 'style="background:' + escapeHtml(v.color) + '">';
   html += '<span class="tab-color-dot" style="background:' + escapeHtml(v.color) + '"></span>';
+  html += '<span class="tab-ready-btn ' + (isSelected ? 'ready' : 'not-ready') + '">'
+    + (isSelected ? 'RDY' : 'NAW') + '</span>';
   if (isMe && isActive) {
-    /* Your tab is the active view — now it's an editable input.
-       The first tap on your own tab just activates it (via the span branch
+    /* Your own tab, currently active → name row becomes an editable input.
+       First tap on your own tab just activates it (via the span branch
        below); the input only renders once you're already here, so mobile
        keyboards don't pop up until a deliberate second tap. */
     html += '<input class="tab-name-input" type="text" value="'
-      + escapeHtml(v.name) + '" autocomplete="off">';
+      + escapeHtml(v.name) + '" autocomplete="off" maxlength="' + NAME_MAX_LEN + '">';
   } else {
     html += '<span class="tab-name">' + escapeHtml(displayNames[v.id] || v.name) + '</span>';
   }
-  html += '<span class="tab-ready-btn ' + (isSelected ? 'ready' : 'not-ready') + '">'
-    + (isSelected ? 'RDY' : 'NAW') + '</span>';
   html += '</div>';
   return html;
 }

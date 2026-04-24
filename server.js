@@ -135,7 +135,21 @@ try {
    ============================================================================ */
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public'), { etag: false, maxAge: 0 }));
+
+/* Serve /public as static files. index.html is the ONE exception — it
+   gets `Cache-Control: no-store` so the browser never holds a stale copy.
+   Mobile Chrome was seen serving a cached index.html (with old `?v=`
+   asset tokens) even with max-age:0, which defeats the whole cache-bust
+   scheme. CSS/JS can be cached freely — their URLs change on each edit. */
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: false,
+  maxAge: 0,
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-store');
+    }
+  }
+}));
 
 
 /* ============================================================================
@@ -678,6 +692,9 @@ app.put('/api/list/:id/comments', (req, res) => {
    ============================================================================ */
 
 app.get('*', (req, res) => {
+  /* Same no-store as the static handler — this route fires for list-ID
+     URLs like /Ab3xPq9K and must never be cached by the browser. */
+  res.setHeader('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 

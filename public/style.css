@@ -14,9 +14,11 @@
      so each "1fr" equals 1% of the grid's width. The grid is 100% of the
      viewport, so each track is the same percentage of the viewport.
 
-     The phone (portrait) is the design target. Desktop uses the SAME
-     percentages — posters/comments/etc just scale up. We may revisit on
-     desktop later, but no per-breakpoint geometry overrides for now.
+     The phone (portrait) is the design target. In landscape orientation
+     (width > height — desktop or a rotated phone) a second grid template
+     kicks in with wider title/comments columns and minimal gutters, since
+     the poster/rank take up silly amounts of horizontal real estate at
+     desktop widths. See the @media (orientation: landscape) block below.
 
      Every cell is a grid item that controls its own internal layout. Two
      "filler" cells (.entry-grab and .entry-remove) are always rendered, even
@@ -421,6 +423,14 @@ html, body {
   width: 100%;
   display: grid;
   grid-template-columns: 7.5fr 7.5fr 10fr 30fr 37.5fr 7.5fr;
+}
+
+/* Landscape (width > height): desktop and rotated phones. Title + comments
+   get the lion's share; grab/rank/poster/X shrink to thin gutters. */
+@media (orientation: landscape) {
+  #movie-list {
+    grid-template-columns: 2fr 2fr 3fr 30fr 61fr 2fr;
+  }
 }
 
 /* Each row is itself a 6-column grid that inherits column widths from

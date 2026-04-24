@@ -1161,6 +1161,16 @@ function renderUserTabs() {
   html += '<div class="tab tab-couch' + (activeTab === 'couch' ? ' tab-active' : '') + '" '
     + 'data-tab="couch">Couch List</div>';
 
+  /* brand new visitor — "Type your name" tab renders immediately after
+     Couch so it's the obvious next thing to tap. Once they save a name
+     they get a real slot and their tab slides into slot order below. */
+  if (!visitor) {
+    html += '<div class="tab tab-mine tab-new">'
+      + '<input id="name-input" class="tab-name-input" type="text" '
+      + 'placeholder="Type your name" autocomplete="off" maxlength="' + NAME_MAX_LEN + '">'
+      + '</div>';
+  }
+
   /* one tab per visitor in slot order — including your own */
   const sortedSlots = Object.keys(listData.visitors).sort((a, b) => a - b);
   sortedSlots.forEach(slot => {
@@ -1171,13 +1181,6 @@ function renderUserTabs() {
   if (visitor) {
     html += '<input type="color" id="color-picker" value="' + escapeHtml(visitor.color) + '" '
       + 'style="display:none">';
-  } else {
-    /* brand new visitor — no slot yet, no row above to render. Add a
-       lone "Type your name" tab so they can join. */
-    html += '<div class="tab tab-mine tab-new">'
-      + '<input id="name-input" class="tab-name-input" type="text" '
-      + 'placeholder="Type your name" autocomplete="off" maxlength="' + NAME_MAX_LEN + '">'
-      + '</div>';
   }
 
   html += '<span id="name-warning" style="display:none"></span>';

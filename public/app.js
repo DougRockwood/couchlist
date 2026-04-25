@@ -185,6 +185,7 @@ async function handleColorChange(newColor) {
   });
 
   renderUserTabs();
+  updateSearchArea();
   renderList();
 }
 
@@ -263,12 +264,18 @@ async function loadList() {
 function updateSearchArea() {
   const searchBox = document.getElementById('search-box');
   const welcome = document.getElementById('welcome-msg');
+  const colorDot = document.getElementById('my-color-dot');
   if (visitor) {
     searchBox.style.display = '';
     welcome.style.display = 'none';
+    if (colorDot) {
+      colorDot.style.display = '';
+      colorDot.style.background = visitor.color;
+    }
   } else {
     searchBox.style.display = 'none';
     welcome.style.display = 'block';
+    if (colorDot) colorDot.style.display = 'none';
   }
 }
 
@@ -1222,7 +1229,6 @@ function buildVisitorTab(v, isMe) {
 
   let html = '<div class="' + classes.join(' ') + '" data-tab="' + v.id + '" '
     + 'style="background:' + escapeHtml(v.color) + '">';
-  html += '<span class="tab-color-dot" style="background:' + escapeHtml(v.color) + '"></span>';
   html += '<span class="tab-ready-btn ' + (isSelected ? 'ready' : 'not-ready') + '">'
     + (isSelected ? 'RDY' : 'NAW') + '</span>';
   if (isMe && isActive) {
@@ -1932,6 +1938,13 @@ function setupEventListeners() {
     debouncedSearch(e.target.value);
   });
 
+  /* --- MY COLOR DOT (search row) --- opens native color picker for this visitor */
+  document.getElementById('my-color-dot').addEventListener('click', () => {
+    if (!visitor) return;
+    const picker = document.getElementById('color-picker');
+    if (picker) picker.click();
+  });
+
   /* --- SEARCH RESULTS: click to add.
          TMDB movie and TV ID spaces overlap, so match on (id, media_type). --- */
   document.getElementById('search-results').addEventListener('click', e => {
@@ -1949,20 +1962,6 @@ function setupEventListeners() {
   tabBar.addEventListener('click', e => {
     /* name input — let native focus behavior happen, don't switch tabs */
     if (e.target.closest('.tab-name-input')) return;
-
-    /* color dot: your own → open native color picker; anyone else's →
-       treat as a click on their tab */
-    const colorDot = e.target.closest('.tab-color-dot');
-    if (colorDot) {
-      const tab = colorDot.closest('.tab');
-      if (!tab) return;
-      if (tab.dataset.tab === visitorId && visitor) {
-        document.getElementById('color-picker').click();
-      } else {
-        handleTabClick(tab.dataset.tab);
-      }
-      return;
-    }
 
     /* RDY/NAW button → toggle ready state */
     const readyBtn = e.target.closest('.tab-ready-btn');
@@ -2124,10 +2123,10 @@ function openHowToModal() {
     + 'readonly tabindex="-1"></span> '
     + 'on your tab to join the list.</p>'
 
-    + '<p><strong>Pick a color</strong> by tapping the left circle '
+    + '<p><strong>Pick a color</strong> by tapping the circle '
     + '<span class="tab-color-dot howto-demo-dot" data-howto-action="color" '
-    + 'style="background:' + escapeHtml(myColor) + '"></span>. '
-    + 'Or keep the random one assigned.</p>'
+    + 'style="background:' + escapeHtml(myColor) + '"></span> '
+    + 'next to the search bar. Or keep the random one assigned.</p>'
 
     + '<p><strong>Search and add movies</strong> from TMDB in the search bar.</p>'
 

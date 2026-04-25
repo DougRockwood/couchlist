@@ -152,6 +152,21 @@ html, body {
 
 .action-btn:hover { background: #f0f0ff; }
 
+/* Visitor's own color picker, sitting in the search row between the
+   search box and the INFO button. Click opens the native color picker. */
+#my-color-dot {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,0.2);
+  cursor: pointer;
+  user-select: none;
+}
+#my-color-dot:hover {
+  filter: brightness(1.12);
+}
+
 /* Sits in the same flex slot as #search-box when no visitor is set, so
    INFO/Help stay on the same row instead of wrapping to a second line. */
 #welcome-msg {

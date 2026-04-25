@@ -167,6 +167,24 @@ app.get('/api/visitor/:id', (req, res) => {
 
 app.put('/api/visitor/:id', (req, res) => {
   const { name, color } = req.body;
+
+  /* SECURITY: validate `color` at the API boundary.
+     The frontend renders this directly into a style attribute as
+     `style="color: ${escapeHtml(color)}"`, but escapeHtml only escapes
+     <>&, NOT quotes. So a color of `red" onclick="alert(1)` would break
+     out of the attribute and run JS in every other visitor's browser
+     (stored XSS → cookie/identity theft). Restrict to the two formats
+     the UI actually produces: 6-digit hex (#rrggbb from <input type=color>)
+     or hsl(...) from randomColor(). Anything else is rejected. */
+  if (color != null && color !== '') {
+    const isHex = typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color);
+    const isHsl = typeof color === 'string' &&
+      /^hsl\(\s*\d+\s*,\s*\d+%\s*,\s*\d+%\s*\)$/.test(color);
+    if (!isHex && !isHsl) {
+      return res.status(400).json({ error: 'invalid color' });
+    }
+  }
+
   db.prepare('INSERT OR REPLACE INTO visitors (id, name, color) VALUES (?, ?, ?)')
     .run(req.params.id, name, color);
   res.json({ id: req.params.id, name, color });
@@ -359,6 +377,55 @@ app.post('/api/list/:id/movies', (req, res) => {
   /* TMDB uses separate ID spaces for movies and TV, so we key duplicates on both. */
   const mediaType = req.body.media_type === 'tv' ? 'tv' : 'movie';
 
+  /* SECURITY: validate fields that get string-concatenated into HTML on the
+     client. None of these reach SQL unsafely (better-sqlite3 binds them as
+     `?` parameters), but the frontend builds movie rows by concatenating
+     `poster`, `year`, and `tmdb_id` directly into <img src="...">,
+     <div data-tmdb-id="...">, and raw text inside titleHtml. Without
+     validation, a malicious POST could plant stored XSS that executes in
+     every visitor's browser when they load the list — letting the attacker
+     steal their 10-char visitor cookie, which IS the identity in this app.
+
+     tmdb_id: positive integer or null (null is allowed because the Details
+              paste flow can create movies without a TMDB ID).
+     year:    null/empty/"?" pass through unchanged; otherwise must be a
+              4-digit number in [1800, 2100]. The literal "?" is the
+              frontend's "no release date" sentinel and is safe — it can't
+              encode HTML.
+     poster:  null/empty pass through; otherwise must look like a TMDB
+              poster path (`/<alphanum-dot-dash-underscore>+`). Excludes
+              spaces, quotes, angle brackets — anything that could break
+              out of the src="..." attribute. */
+  let tmdbIdNum;
+  if (tmdb_id == null) {
+    tmdbIdNum = null;
+  } else {
+    tmdbIdNum = Number(tmdb_id);
+    if (!Number.isInteger(tmdbIdNum) || tmdbIdNum <= 0) {
+      return res.status(400).json({ error: 'invalid tmdb_id' });
+    }
+  }
+
+  let validYear;
+  if (year == null || year === '' || year === '?') {
+    validYear = (year === '?') ? '?' : null;
+  } else {
+    const yearNum = Number(year);
+    if (!Number.isInteger(yearNum) || yearNum < 1800 || yearNum > 2100) {
+      return res.status(400).json({ error: 'invalid year' });
+    }
+    validYear = yearNum;
+  }
+
+  let validPoster;
+  if (poster == null || poster === '') {
+    validPoster = null;
+  } else if (typeof poster === 'string' && /^\/[A-Za-z0-9_.-]+$/.test(poster)) {
+    validPoster = poster;
+  } else {
+    return res.status(400).json({ error: 'invalid poster path' });
+  }
+
   /* create the list if it doesn't exist yet */
   const existingList = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
   if (!existingList) {
@@ -369,7 +436,7 @@ app.post('/api/list/:id/movies', (req, res) => {
   /* check for duplicate — same TMDB item already on this list (id+type) */
   const existing = db.prepare(
     'SELECT * FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
-  ).get(listId, tmdb_id, mediaType);
+  ).get(listId, tmdbIdNum, mediaType);
   if (existing) return res.json(existing);
 
   /* auto-join: if this visitor has no slot, assign one now */
@@ -404,10 +471,11 @@ app.post('/api/list/:id/movies', (req, res) => {
     });
   }
 
-  /* insert the new movie */
+  /* insert the new movie — note we store the VALIDATED values (tmdbIdNum,
+     validYear, validPoster), not the raw request body fields. */
   const result = db.prepare(
     'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(listId, tmdb_id, mediaType, title, year, poster, visitor_id);
+  ).run(listId, tmdbIdNum, mediaType, title, validYear, validPoster, visitor_id);
   const newMovieId = result.lastInsertRowid;
 
   /* count total movies now (including the one we just added) — this is the
@@ -506,7 +574,22 @@ app.put('/api/list/:id/swap', (req, res) => {
   const listId = req.params.id;
   const { slot, movieId, direction } = req.body;
 
-  const col = 'user' + slot + '_rank';
+  /* SECURITY: `slot` is concatenated into the SQL column name on the next
+     line — `'user' + slot + '_rank'`. Every other endpoint that builds
+     this column reads `slot` from the list_visitors table (where it's
+     constrained to 1..10 by a CHECK), but /swap and /move take it
+     directly from the request body. Without this guard, a payload like
+     `1_rank = 0, list_id = 'other' --` produces a syntactically valid
+     UPDATE that re-parents movie rows. better-sqlite3 blocks
+     multi-statement strings, so DROP TABLE etc. is impossible, but
+     re-parenting / clobbering columns is not. Restricting to a literal
+     integer 1..10 closes the surface entirely. */
+  const slotNum = Number(slot);
+  if (!Number.isInteger(slotNum) || slotNum < 1 || slotNum > 10) {
+    return res.status(400).json({ error: 'invalid slot' });
+  }
+
+  const col = 'user' + slotNum + '_rank';
 
   /* get the current rank of the movie being moved */
   const movie = db.prepare('SELECT id, ' + col + ' as rank FROM movies WHERE id = ? AND list_id = ?')
@@ -551,7 +634,14 @@ app.put('/api/list/:id/move', (req, res) => {
   const listId = req.params.id;
   const { slot, movieId, direction } = req.body;
 
-  const col = 'user' + slot + '_rank';
+  /* SECURITY: same column-name injection risk as /swap above — `slot` is
+     concatenated into the SQL column name. Restrict to integer 1..10. */
+  const slotNum = Number(slot);
+  if (!Number.isInteger(slotNum) || slotNum < 1 || slotNum > 10) {
+    return res.status(400).json({ error: 'invalid slot' });
+  }
+
+  const col = 'user' + slotNum + '_rank';
 
   /* get the current rank of the movie being moved */
   const movie = db.prepare('SELECT id, ' + col + ' as rank FROM movies WHERE id = ? AND list_id = ?')

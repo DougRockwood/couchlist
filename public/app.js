@@ -443,7 +443,33 @@ async function addMovie(tmdbMovie) {
    tab-dependent visual language — see the comment at the top of renderEntry.
    ============================================================================ */
 
+/* Push the current RDY users' colors into --rdy-gradient on :root.
+   Style.css uses this gradient as a background clipped to the shape of
+   prominent text (movie titles, rank numbers). 0 RDY → white fallback;
+   1 RDY → solid color of that user; 2+ → left-to-right gradient through
+   their colors in slot order. Called from renderList() so the gradient
+   updates whenever ready state changes. */
+function applyRdyGradient() {
+  if (!listData || !listData.visitors) return;
+  /* slot-ordered for stability — 1, 2, 3 ... */
+  const sortedSlots = Object.keys(listData.visitors).sort((a, b) => a - b);
+  const colors = sortedSlots
+    .map(slot => listData.visitors[slot])
+    .filter(v => selectedVisitors[v.id])
+    .map(v => v.color);
+  let gradient;
+  if (colors.length === 0) {
+    gradient = 'linear-gradient(90deg, #ffffff, #ffffff)';
+  } else if (colors.length === 1) {
+    gradient = 'linear-gradient(90deg, ' + colors[0] + ', ' + colors[0] + ')';
+  } else {
+    gradient = 'linear-gradient(90deg, ' + colors.join(', ') + ')';
+  }
+  document.documentElement.style.setProperty('--rdy-gradient', gradient);
+}
+
 function renderList() {
+  applyRdyGradient();
   const container = document.getElementById('movie-list');
   const movies = listData.movies.slice();                          // copy so we can sort
 
@@ -1187,9 +1213,11 @@ function renderUserTabs() {
   const tabBar = document.getElementById('tab-bar');
   let html = '';
 
-  /* Couch tab — always first */
+  /* Couch tab — always first. Label is wrapped in .tab-couch-text so its
+     fill can be clipped to the RDY-gradient while the parent keeps its
+     solid black background (see style.css §4). */
   html += '<div class="tab tab-couch' + (activeTab === 'couch' ? ' tab-active' : '') + '" '
-    + 'data-tab="couch">Couch List</div>';
+    + 'data-tab="couch"><span class="tab-couch-text">Couch List</span></div>';
 
   /* brand new visitor — "Type your name" tab renders immediately after
      Couch so it's the obvious next thing to tap. Once they save a name
@@ -1912,11 +1940,21 @@ function formatYear(releaseDate) {
   return releaseDate.split('-')[0];
 }
 
+/* SECURITY: escape user-supplied text for safe insertion into HTML.
+   The previous textContent→innerHTML trick escaped <, >, and & — but NOT
+   " or ', which meant any caller using escapeHtml inside a double-quoted
+   attribute (e.g. `style="color: ${escapeHtml(color)}"` in renderEntry)
+   could still be broken out of by a malicious value. This version handles
+   all five HTML-significant characters explicitly. The `&` substitution
+   MUST run first so we don't double-escape later substitutions. */
 function escapeHtml(text) {
   if (!text) return '';
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 
@@ -2123,35 +2161,34 @@ function openHowToModal() {
     + 'readonly tabindex="-1"></span> '
     + 'on your tab to join the list.</p>'
 
-    + '<p><strong>Pick a color</strong> by tapping the circle '
+    + '<p><strong>Change your color</strong> by tapping the circle '
     + '<span class="tab-color-dot howto-demo-dot" data-howto-action="color" '
     + 'style="background:' + escapeHtml(myColor) + '"></span> '
-    + 'next to the search bar. Or keep the random one assigned.</p>'
+    + 'next to the search bar.</p>'
 
-    + '<p><strong>Search and add movies</strong> from TMDB in the search bar.</p>'
+    + '<p><strong>Search for movies</strong> you want to add to the watch list in the search bar.</p>'
 
-    + '<p><strong>Rank movies</strong> on your tab by dragging them by the '
-    + 'handle on the left. Drop between any two rows to reorder.</p>'
+    + '<p><strong>Rank movies</strong> in your tab.Drag them by the '
+    + 'handle. Drop them in their new spot.</p>'
 
-    + '<p><strong>Comment</strong> by tapping on '
+    + '<p><strong>Comment</strong>once on each movie. Tap on '
     + '<span class="comment-box howto-demo-box" style="color:#1976d2">'
     + '<strong>' + escapeHtml(myName) + ':</strong></span> '
-    + '(only one per movie).</p>'
+    + '.</p>'
 
-    + '<p>The <span class="tab tab-couch howto-demo-tab">Couch List</span> '
-    + 'is a real-time vote result (Borda method) of the '
+    + '<p>The <span class="tab tab-couch howto-demo-tab"><span class="tab-couch-text">Couch List</span></span> '
+    + 'is the consensus(Borda method) of the '
     + '<span class="tab-ready-btn ready howto-demo-rdy">RDY</span> people.</p>'
 
     + '<p><strong>Toggle</strong> '
     + '<span class="tab-ready-btn ' + rdyClass + ' howto-demo-rdy howto-demo-rdy-active" '
     + 'data-howto-action="rdy">' + rdyText + '</span> '
-    + 'on any tab to include or exclude that person. Toggles are shared.</p>'
+    + 'on any tab to include or exclude that person. Shared globally.</p>'
 
     + '<p><strong>Tap movies</strong> for plot and cast pop up. Tap that '
     + 'to go to TMDB.</p>'
 
-    + '<p><strong>Remove movies</strong> with the ✕ on the right. Only the '
-    + 'ones you have added.</p>'
+    + '<p><strong>Remove movies</strong> you have added with the ✕ on the right.</p>'
 
     + '<p><strong>The INFO button</strong> shows all the data, for nerds.</p>'
 

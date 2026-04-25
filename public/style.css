@@ -43,6 +43,16 @@
   padding: 0;
 }
 
+/* RDY-gradient: a left-to-right gradient through all RDY users' colors,
+   set on :root by applyRdyGradient() in app.js after every renderList().
+   Currently consumed only by the Couch tab's "Couch List" label, where
+   the gradient is clipped to the shape of the text on a black tab body.
+   Defaults to white so the label is never invisible if no one is ready
+   (or if JS hasn't run yet). */
+:root {
+  --rdy-gradient: linear-gradient(90deg, #ffffff, #ffffff);
+}
+
 html, body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 16px;
@@ -273,7 +283,12 @@ html, body {
 }
 
 /* Couch tab: big label centered. Min-width = height keeps the smallest
-   form square; the big font usually pushes it wider. */
+   form square; the big font usually pushes it wider. The Couch tab is
+   the only site element with a black background — its inner .tab-couch-text
+   span paints the label using the RDY-gradient via background-clip: text.
+   We can't put the gradient on .tab-couch itself because background-clip:
+   text would hide the black fill too — so the black lives on the parent
+   and the gradient lives on the child span. */
 .tab-couch {
   display: inline-flex;
   align-items: center;
@@ -283,6 +298,14 @@ html, body {
   font-size: 22px;
   font-weight: 600;
   letter-spacing: 0.3px;
+  background: #000000;
+}
+
+.tab-couch-text {
+  background: var(--rdy-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 /* Visitor tab: 3-column / 2-row grid. Row 1 has the dots at the outer

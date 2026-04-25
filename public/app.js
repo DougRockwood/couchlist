@@ -2198,7 +2198,7 @@ function openHowToModal() {
 
     + '<p>Going to '
     + '<a href="https://couchlist.org/" target="_blank" rel="noopener">couchlist.org</a> '
-    + 'generates a new URL for your list. Invite potential couch mates by '
+    + 'generates a new list and URL. Invite potential couch mates to this list by '
     + 'sending them: <strong>' + escapeHtml(window.location.host + '/' + listId) + '</strong></p>'
     + '</div>';
 

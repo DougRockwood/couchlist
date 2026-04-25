@@ -2168,22 +2168,22 @@ function openHowToModal() {
 
     + '<p><strong>Search for movies</strong> you want to add to the watch list in the search bar.</p>'
 
-    + '<p><strong>Rank movies</strong> in your tab.Drag them by the '
+    + '<p><strong>Rank movies</strong> in your tab. Drag them by the '
     + 'handle. Drop them in their new spot.</p>'
 
-    + '<p><strong>Comment</strong>once on each movie. Tap on '
+    + '<p><strong>Comment</strong> once on each movie. Tap on '
     + '<span class="comment-box howto-demo-box" style="color:#1976d2">'
     + '<strong>' + escapeHtml(myName) + ':</strong></span> '
     + '.</p>'
 
     + '<p>The <span class="tab tab-couch howto-demo-tab"><span class="tab-couch-text">Couch List</span></span> '
-    + 'is the consensus(Borda method) of the '
+    + 'is the consensus (Borda method) of the '
     + '<span class="tab-ready-btn ready howto-demo-rdy">RDY</span> people.</p>'
 
     + '<p><strong>Toggle</strong> '
     + '<span class="tab-ready-btn ' + rdyClass + ' howto-demo-rdy howto-demo-rdy-active" '
     + 'data-howto-action="rdy">' + rdyText + '</span> '
-    + 'on any tab to include or exclude that person. Shared globally.</p>'
+    + 'on any tab to include or exclude that person. Shared state with all users.</p>'
 
     + '<p><strong>Tap movies</strong> for plot and cast pop up. Tap that '
     + 'to go to TMDB.</p>'
@@ -2196,9 +2196,10 @@ function openHowToModal() {
     + 'Anyone who sees it can be you on the site. Don\'t put anything '
     + 'sensitive here.</p>'
 
-    + '<p class="howto-newlist">Go to '
-    + '<a href="https://couchlist.org/" target="_blank" rel="noopener">couchlist.org/</a> '
-    + 'to start a new list.</p>'
+    + '<p>Going to '
+    + '<a href="https://couchlist.org/" target="_blank" rel="noopener">couchlist.org</a> '
+    + 'generates a new URL for your list. Invite potential couch mates by '
+    + 'sending them: <strong>' + escapeHtml(window.location.host + '/' + listId) + '</strong></p>'
     + '</div>';
 
   modal.style.display = 'block';

@@ -410,26 +410,45 @@ html, body {
    six cells align perfectly with the parent grid's tracks.
 
    Track totals:
-     A 7.5  grab handle (or empty placeholder cell)
-     B 7.5  rank number
+     A 7.5  YOUR rank (or empty when on Couch / not joined)
+     B 7.5  OTHER's rank — drag handle on your tab, viewed user's rank on
+            their tab, unused on Couch (Couch rank spans A+B centered)
      C 10   poster
-     D 30   title (+ adder badge below)
-     E 37.5 comments stack
+     D 30   title
+     E 37.5 comments stack (one pill per visitor — adder first, then in slot order)
      F 7.5  remove X (or empty placeholder cell)
+
+   Visual language:
+     "Your rank lives on the LEFT, others on the RIGHT, and the Couch
+      consensus is the two merged into one number in the middle."
    ============================================================================ */
 
 #movie-list {
   flex: 1;
   width: 100%;
   display: grid;
-  grid-template-columns: 7.5fr 7.5fr 10fr 30fr 37.5fr 7.5fr;
+  /* align-content:start — a grid container's default normal/stretch will
+     distribute extra vertical space across auto-sized rows when the
+     container has more height than content (short list + flex:1). That
+     inflated each row on lists with only a handful of movies. start
+     stacks rows at the top with their natural (row-height-driven) size. */
+  align-content: start;
+  /* Poster column (C) is a fixed px set by renderList() from --poster-width
+     (row height * TMDB 92/138 aspect). The rest split the leftover width
+     using minmax(0, Nfr) — ratios preserved, no min-content bleed. */
+  grid-template-columns:
+    minmax(0, 7.5fr) minmax(0, 7.5fr) var(--poster-width, 60px)
+    minmax(0, 30fr)  minmax(0, 37.5fr) minmax(0, 7.5fr);
 }
 
 /* Landscape (width > height): desktop and rotated phones. Title + comments
-   get the lion's share; grab/rank/poster/X shrink to thin gutters. */
+   get the lion's share; grab/rank/X shrink to thin gutters. Poster column
+   still follows --poster-width. */
 @media (orientation: landscape) {
   #movie-list {
-    grid-template-columns: 2fr 2fr 3fr 30fr 61fr 2fr;
+    grid-template-columns:
+      minmax(0, 2fr) minmax(0, 2fr) var(--poster-width, 60px)
+      minmax(0, 30fr) minmax(0, 61fr) minmax(0, 2fr);
   }
 }
 
@@ -443,14 +462,24 @@ html, body {
   grid-column: 1 / -1;
   align-items: stretch;
   padding: 8px 0;
+  /* Row height is pinned to the computed --row-height so the layout is
+     uniform across rows even when a row's comments stack is shorter than
+     the sum of all pills (e.g. if a pill is collapsed during expand). */
+  min-height: var(--row-height, auto);
   border-bottom: 1px solid #ccc;
   position: relative;
   background: #ffffff;
 }
 
-/* --- Column A: grab handle (or empty) ---
-   Always rendered; on other-people's tabs it's an empty cell whose only
-   job is to keep column widths from shifting when you switch tabs. */
+/* --- Column A / Column B: rank cells ---
+   Cells flow into the subgrid in source order. renderEntry emits exactly
+   one or two cells before the poster, depending on tab:
+     - Couch tab    : a single .entry-rank.entry-rank-couch spanning cols A+B
+     - Your tab     : .entry-rank in A, .entry-grab (drag handle) in B
+     - Other's tab  : .entry-rank.entry-rank-mine-shadow in A,
+                      .entry-rank.entry-rank-other in B
+   The remove cell is still always emitted in column F so the grid never
+   shifts when switching tabs. */
 
 .entry-grab {
   display: flex;
@@ -488,25 +517,55 @@ html, body {
   pointer-events: none;
 }
 
-/* --- Column B: rank number ---
-   clamp() scales the digits with the viewport without needing a media
-   query. 5vw is roughly 21px on a Pixel 8 (412 CSS px) and grows to the
-   60px cap on big desktops. Three-digit ranks fit; "1" sits centered with
-   whitespace on either side, which is fine. */
+/* --- Rank cell styling ---
+   Portrait: each rank column is 7.5% of viewport — ~31px on a Pixel, so
+   the number can breathe a bit. Landscape: only 2% per column, so we
+   shrink the font hard for 2-digit ranks. No horizontal padding on the
+   cell — the column is too narrow to give any away. */
 
 .entry-rank {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 2px;
+  padding: 0;
+  overflow: hidden;
 }
 
 .rank-number {
-  font-size: clamp(20px, 5vw, 60px);
+  font-size: clamp(22px, 6vw, 30px);
   font-weight: bold;
   color: #0000ee;
   line-height: 1;
   text-align: center;
+}
+
+/* Couch tab: the rank cell spans both A and B and centers the number
+   between them. Tied positions render as a range like "23-24" — the
+   range can be longer than a single digit, so we shrink the font enough
+   that "39-43" still fits inside the combined 15% column width. */
+.entry-rank-couch {
+  grid-column: 1 / 3;
+}
+
+.entry-rank-couch .rank-number {
+  font-size: clamp(16px, 4.5vw, 26px);
+}
+
+/* Other-user tab: their rank in B is the regular brand-blue rank-number.
+   Your own rank in A is the same digits but faded gray-blue and lighter
+   weight, so it reads as "context, not the order this list is sorted by." */
+.entry-rank-mine-shadow .rank-number {
+  color: #9aaecf;
+  font-weight: 500;
+}
+
+@media (orientation: landscape) {
+  .rank-number {
+    font-size: clamp(12px, 1.8vw, 22px);
+  }
+  .entry-rank-couch .rank-number {
+    font-size: clamp(11px, 1.6vw, 20px);
+  }
 }
 
 /* --- Column C: poster ---
@@ -542,12 +601,11 @@ html, body {
   font-size: 20px;
 }
 
-/* --- Column D: title + adder badge ---
-   Title text wraps inside the cell as needed. The bottom row (adder badge
-   + optional tie label) is pinned to the bottom of the cell via
-   justify-content:space-between, which works because align-items:stretch
-   on .entry stretches this cell to the row's full height (set by the
-   poster on its left).
+/* --- Column D: title ---
+   Just the title text now. Adder used to live as a colored initial badge
+   beneath the title, but the visual language overhaul (rockwoodbot /
+   2026-04-25) folded that into the comments column: the adder is always
+   the first comment pill, so a separate badge is redundant.
 
    min-width:0 is the same flex-shrink unlock as the search box — without
    it the cell refuses to shrink below the title's intrinsic min-content
@@ -556,7 +614,6 @@ html, body {
 .entry-title {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
   min-width: 0;
   padding: 4px 6px 0 6px;
   font-size: 14px;
@@ -566,37 +623,15 @@ html, body {
 }
 
 .entry-title-text {
-  /* content sized — bottom row uses margin-top:auto via the parent's
-     space-between, so this needs no special anchoring */
-}
-
-.entry-title-bottom {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-}
-
-.entry-added-by {
-  width: 21px;                        /* 75% of the 28px tab color-dot */
-  height: 21px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
-  border: 1px solid rgba(0,0,0,0.2);
-  flex-shrink: 0;
-}
-
-.tie-label {
-  font-size: 9px;
-  color: #888;
-  white-space: nowrap;
+  /* Line-clamp caps the title at --title-lines lines (set by renderList,
+     equal to the visitor count N). When the title is longer it gets
+     ellipsized rather than growing the row past the comments-driven row
+     height. Min-clamp is 1 so single-visitor lists still render a line. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--title-lines, 2);
+  line-clamp: var(--title-lines, 2);
+  overflow: hidden;
 }
 
 /* --- Column E: comments ---
@@ -608,17 +643,39 @@ html, body {
 .entry-comments {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
+  align-items: stretch;
+  gap: 2px;
   min-width: 0;
   padding: 0 6px;
 }
 
+/* Each row pairs the pill with its "(rank)" label to the right.
+   min-width:0 lets the pill shrink and ellipsize inside the flex row. */
+.comment-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.comment-row .comment-box {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.comment-rank {
+  font-size: 11px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
 .comment-box {
   font-size: 12px;
-  padding: 4px 8px;
+  line-height: 1.2;
+  padding: 1px 6px;
   background: #f7f7f7;
-  border-radius: 6px;
+  border-radius: 4px;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -427,11 +427,13 @@ async function addMovie(tmdbMovie) {
 
    Borda is computed INLINE here — no separate calculateCouchRanking() function.
    For each movie, sum up the rank columns of all selected voters. Lower = better.
-   Ties get a "tied 2-3" label. Ties are broken randomly.
+   Ties share a label like "23-24" (or "39-43" for a 5-way tie) shown in
+   place of the rank number on every tied row. Ties are broken randomly for
+   internal ordering only — the displayed number is the same across the run.
 
-   --- renderEntry(movie, position, tieLabel, isMyTab) ---
-   Builds one row. If isMyTab is true, shows a square grab handle to the
-   left of the rank number (drag-to-reorder — see Section 8).
+   --- renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab) ---
+   Builds one row. The two leftmost grid cells (cols A and B) follow a
+   tab-dependent visual language — see the comment at the top of renderEntry.
    ============================================================================ */
 
 function renderList() {
@@ -447,6 +449,27 @@ function renderList() {
   /* build lookup: visitor id → visitor object (for names, colors in comments) */
   const visitorById = {};
   Object.values(listData.visitors).forEach(v => { visitorById[v.id] = v; });
+
+  /* row-height experiment — row height is a function of visitor count.
+     Every visitor gets a comment pill, pills stack in the comments column,
+     so the comments stack determines the row height. Poster column width =
+     rowHeight * TMDB aspect (92/138). Remaining columns split the leftover
+     width using their original percent ratios.
+     Pill box model: 12px font * 1.2 line-height = 14.4 content, + 2px
+     vertical padding + 2px border = 18.4px — rounded to 19 for a tiny
+     safety margin. Gap between pills = 2px. Entry has 8px top/bottom
+     padding (16 total).
+     Title clamp = N lines: now that the adder badge is gone the title
+     can use the full row height instead of leaving the bottom row free. */
+  const N        = Math.max(1, Object.keys(listData.visitors).length);
+  const pillH    = 19;
+  const pillGap  = 2;
+  const entryPad = 16;
+  const rowH     = N * pillH + (N - 1) * pillGap + entryPad;
+  const posterW  = Math.round(rowH * 92 / 138);
+  container.style.setProperty('--row-height',  rowH + 'px');
+  container.style.setProperty('--poster-width', posterW + 'px');
+  container.style.setProperty('--title-lines', String(N));
 
   /* figure out which tab we're on and what slot that corresponds to */
   let viewSlot = null;                                             // which slot's ranking to show
@@ -521,44 +544,70 @@ function renderList() {
   movies.forEach((movie, index) => {
     const position = index + 1;
     const tieLabel = isCouchTab ? (couchTies[movie.id] || null) : null;
-    const entry = renderEntry(movie, position, tieLabel, visitorById, isMyTab);
+    const entry = renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab);
     container.appendChild(entry);
   });
 }
 
-function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
+function renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab) {
   const entry = document.createElement('div');
   entry.className = 'entry';
   entry.dataset.movieId = movie.id;
 
-  /* The row is six grid cells in order:
-       grab | rank | poster | title | comments | remove
-     The grab and remove cells are always emitted so column widths stay
-     stable when switching tabs (a row without these cells would otherwise
-     shift its remaining cells leftward into columns 1 and 5).
+  /* VISUAL LANGUAGE FOR THE TWO LEFT-MOST CELLS (cols A and B):
+       your rank → LEFT (col A)
+       others'   → RIGHT (col B)
+       Couch     → the two ranks merged into one centered number in the middle
+     Concretely:
+       - Your tab    : your rank in A, drag handle in B.
+       - Other's tab : your own rank in A (faded gray-blue, out of order
+                       since the list is sorted by THEIR ranks), their rank
+                       in B (brand blue).
+       - Couch tab   : a single rank cell spans cols 1-2, centered.
+                       Tied positions show a range like "23-24" or "39-43"
+                       repeated on every tied row (no separate "tied" pill).
 
-     1. GRAB CELL — handle on your own tab, empty placeholder elsewhere.
-     The handle gets `touch-action:none` so finger drags on it start a drag
-     instead of scrolling the page; the rest of the row keeps default
-     touch-action so taps elsewhere still scroll. */
-  const grabHtml = (isMyTab && mySlot)
-    ? '<div class="entry-grab">'
-        + '<div class="grab-handle" data-movie-id="' + movie.id + '" aria-label="Drag to reorder">'
-        + '<span class="grab-icon">&#9776;</span>'        /* ☰ three-bars icon */
+     Cols C–F are unchanged: poster | title | comments | remove. The remove
+     cell is always emitted so col F's width never shifts between tabs. */
+
+  let leftHtml, rightHtml;
+
+  if (isCouchTab) {
+    /* Couch: one centered rank that spans cols 1-2. Tied → range string. */
+    const labelText = tieLabel || String(position);
+    leftHtml = '<div class="entry-rank entry-rank-couch">'
+      + '<span class="rank-number">' + escapeHtml(labelText) + '</span>'
+      + '</div>';
+    rightHtml = '';
+  } else if (isMyTab) {
+    /* Your tab: your rank in A, drag handle in B (the reverse of the
+       earlier layout). The handle gets `touch-action:none` so finger drags
+       start a drag instead of scrolling the page. */
+    leftHtml = '<div class="entry-rank">'
+      + '<span class="rank-number">' + position + '</span>'
+      + '</div>';
+    rightHtml = mySlot
+      ? '<div class="entry-grab">'
+          + '<div class="grab-handle" data-movie-id="' + movie.id + '" aria-label="Drag to reorder">'
+          + '<span class="grab-icon">&#9776;</span>'        /* ☰ three-bars icon */
+          + '</div>'
         + '</div>'
-      + '</div>'
-    : '<div class="entry-grab"></div>';
+      : '<div class="entry-grab"></div>';
+  } else {
+    /* Other's tab: your own rank in A (faded), their rank in B (blue).
+       The list is sorted by their ranks so your own column appears
+       out-of-order — that's the point: it's a glanceable comparison. */
+    const myRank = (mySlot != null) ? movie['user' + mySlot + '_rank'] : null;
+    const myRankStr = (myRank != null) ? String(myRank) : '';
+    leftHtml = '<div class="entry-rank entry-rank-mine-shadow">'
+      + (myRankStr ? '<span class="rank-number">' + escapeHtml(myRankStr) + '</span>' : '')
+      + '</div>';
+    rightHtml = '<div class="entry-rank entry-rank-other">'
+      + '<span class="rank-number">' + position + '</span>'
+      + '</div>';
+  }
 
-  /* 2. RANK NUMBER. The "tied N-M" label is rendered down in step 4
-     next to the adder badge under the title. */
-  const rankHtml = '<div class="entry-rank">'
-    + '<span class="rank-number">' + position + '</span>'
-    + '</div>';
-
-  const tieHtml = tieLabel
-    ? '<span class="tie-label">tied ' + tieLabel + '</span>' : '';
-
-  /* 3. POSTER THUMBNAIL — media_type rides along so popup/link can hit the right TMDB endpoint */
+  /* POSTER THUMBNAIL — media_type rides along so popup/link can hit the right TMDB endpoint */
   const posterUrl = movie.poster
     ? TMDB_IMG + 'w92' + movie.poster
     : '';
@@ -568,77 +617,51 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
     + (posterUrl ? '<img src="' + posterUrl + '">' : '<div class="no-poster">?</div>')
     + '</div>';
 
-  /* 4. TITLE + ADDER BADGE (+ optional TIE LABEL)
-     The title cell stretches to the row's height (set by the poster cell
-     to its left); justify-content:space-between in the CSS pushes the
-     bottom row to align with the poster's bottom edge. */
-  const adder = visitorById[movie.added_by];
-  const adderName = adder ? (adder.name || '') : '';
-  const adderInitial = adderName.trim().charAt(0).toUpperCase() || '?';
-  const adderColor = adder ? adder.color : '#999';
-  const addedByHtml = '<div class="entry-added-by" '
-    + 'style="background: ' + escapeHtml(adderColor) + '" '
-    + 'title="Added by ' + escapeHtml(adderName || 'unknown') + '">'
-    + escapeHtml(adderInitial)
-    + '</div>';
-
-  const titleBottomHtml = '<div class="entry-title-bottom">'
-    + addedByHtml
-    + tieHtml
-    + '</div>';
-
+  /* TITLE — just the title text now. The adder badge is gone (the adder
+     is implicit: their comment is always the first pill in the comments
+     column). The "tied" pill is gone too — see the rank cell above. */
   const titleHtml = '<div class="entry-title" data-tmdb-id="' + movie.tmdb_id
     + '" data-media-type="' + mediaType + '">'
     + '<div class="entry-title-text">'
     + escapeHtml(movie.title) + ' (' + movie.year + ')'
     + '</div>'
-    + titleBottomHtml
     + '</div>';
 
-  /* 5. COMMENTS — read directly from the movie row's userN_comment columns.
-     We iterate through all occupied slots and show any non-null comments.
-     The movie adder's comment goes first. */
+  /* 5. COMMENTS — one pill per occupied visitor slot, always emitted so
+     each list member is visible on every row (blank pills are "Name: rank"
+     with an empty comment). Each pill shows the visitor's rank for this
+     movie right after their name, then the comment text if any.
+     The movie adder's pill goes first, then the rest in slot order. */
   let commentsHtml = '<div class="entry-comments">';
 
-  /* gather all comments: [ { visitorId, slot, text }, ... ] */
-  const commentEntries = [];
+  const pillEntries = [];
   Object.entries(listData.visitors).forEach(([slot, v]) => {
-    const text = movie['user' + slot + '_comment'];
-    if (text) {
-      commentEntries.push({ visitorId: v.id, slot: parseInt(slot), text: text });
-    }
+    const text = movie['user' + slot + '_comment'] || '';
+    const rank = movie['user' + slot + '_rank'];
+    pillEntries.push({ visitorId: v.id, slot: parseInt(slot), text: text, rank: rank });
   });
 
-  /* sort: movie adder's comment first */
-  commentEntries.sort((a, b) => {
+  pillEntries.sort((a, b) => {
     if (a.visitorId === movie.added_by) return -1;
     if (b.visitorId === movie.added_by) return 1;
     return a.slot - b.slot;
   });
 
-  let myCommentExists = false;
-
-  commentEntries.forEach(c => {
+  pillEntries.forEach(c => {
     const commenter = visitorById[c.visitorId] || { name: '?', color: '#999' };
-    if (c.visitorId === visitorId) myCommentExists = true;
-    commentsHtml += '<div class="comment-box" '
-      + 'data-movie-id="' + movie.id + '" '
-      + 'data-visitor-id="' + c.visitorId + '" '
-      + 'style="color: ' + escapeHtml(commenter.color) + '">'
-      + '<strong>' + escapeHtml(displayNames[c.visitorId] || commenter.name) + ':</strong> '
-      + escapeHtml(c.text)
+    const rankStr = (c.rank != null) ? '(' + c.rank + ')' : '';
+    commentsHtml += '<div class="comment-row">'
+      + '<div class="comment-box" '
+        + 'data-movie-id="' + movie.id + '" '
+        + 'data-visitor-id="' + c.visitorId + '" '
+        + 'style="color: ' + escapeHtml(commenter.color) + '">'
+        + '<strong>' + escapeHtml(displayNames[c.visitorId] || commenter.name) + ':</strong>'
+        + (c.text ? ' ' + escapeHtml(c.text) : '')
+      + '</div>'
+      + (rankStr ? '<span class="comment-rank" style="color: ' + escapeHtml(commenter.color) + '">' + escapeHtml(rankStr) + '</span>' : '')
       + '</div>';
   });
 
-  /* if we haven't commented yet, show an empty box with our name */
-  if (visitor && !myCommentExists) {
-    commentsHtml += '<div class="comment-box" '
-      + 'data-movie-id="' + movie.id + '" '
-      + 'data-visitor-id="' + visitorId + '" '
-      + 'style="color: ' + escapeHtml(visitor.color) + '">'
-      + '<strong>' + escapeHtml(displayNames[visitorId] || visitor.name) + ':</strong> '
-      + '</div>';
-  }
   commentsHtml += '</div>';
 
   /* 6. REMOVE CELL — wrapper is always emitted so column F's width never
@@ -649,7 +672,7 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab) {
         : '')
     + '</div>';
 
-  entry.innerHTML = grabHtml + rankHtml + posterHtml + titleHtml + commentsHtml + removeHtml;
+  entry.innerHTML = leftHtml + rightHtml + posterHtml + titleHtml + commentsHtml + removeHtml;
   return entry;
 }
 

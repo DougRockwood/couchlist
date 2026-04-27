@@ -515,6 +515,80 @@ app.put('/api/visitor/:id', (req, res) => {
   res.json({ id: req.params.id, name, color });
 });
 
+/* GET /api/visitor/:id/shelf — everything needed to render My Shelf in one
+   response.
+
+   Returns:
+     {
+       visitor: { id, name, color },
+       lists:   [ { id, list_name, ready, slot, private, owner_visitor_id, created } ],
+       movies:  [ { tmdb_id, media_type, title, year, poster, master_rank,
+                    added_by_me, list_ids: [string, ...] } ]
+     }
+
+   Movies are sorted by master_rank ascending. `added_by_me` is true if the
+   visitor was the adder on AT LEAST one list this movie is on. `list_ids`
+   contains every list the movie is on AND the visitor is also on (we never
+   leak movies from lists they aren't a member of).
+
+   404 if the visitor row doesn't exist; an empty shelf is returned for
+   visitors who exist but have no list memberships yet. */
+app.get('/api/visitor/:id/shelf', (req, res) => {
+  const vid = req.params.id;
+
+  const visitor = db.prepare('SELECT id, name, color FROM visitors WHERE id = ?').get(vid);
+  if (!visitor) return res.status(404).json({ error: 'visitor not found' });
+
+  const lists = db.prepare(`
+    SELECT l.id, l.created, l.private, l.owner_visitor_id,
+           lv.slot, lv.list_name, lv.ready
+    FROM list_visitors lv
+    JOIN lists l ON l.id = lv.list_id
+    WHERE lv.visitor_id = ?
+    ORDER BY l.created, l.id
+  `).all(vid).map(r => ({
+    id: r.id,
+    list_name: r.list_name,
+    ready: r.ready !== 0,
+    slot: r.slot,
+    private: r.private,
+    owner_visitor_id: r.owner_visitor_id,
+    created: r.created
+  }));
+
+  const movieRows = db.prepare(`
+    SELECT
+      m.tmdb_id, m.media_type,
+      MIN(m.title)  AS title,
+      MIN(m.year)   AS year,
+      MIN(m.poster) AS poster,
+      um.master_rank,
+      GROUP_CONCAT(DISTINCT m.list_id) AS list_ids_csv,
+      MAX(CASE WHEN m.added_by = ? THEN 1 ELSE 0 END) AS added_by_me
+    FROM movies m
+    JOIN user_movies um
+      ON um.visitor_id = ? AND um.tmdb_id = m.tmdb_id AND um.media_type = m.media_type
+    JOIN list_visitors lv
+      ON lv.list_id = m.list_id AND lv.visitor_id = ?
+    GROUP BY m.tmdb_id, m.media_type, um.master_rank
+    ORDER BY um.master_rank
+  `).all(vid, vid, vid);
+
+  const movies = movieRows.map(r => ({
+    tmdb_id: r.tmdb_id,
+    media_type: r.media_type,
+    title: r.title,
+    year: r.year,
+    poster: r.poster,
+    master_rank: r.master_rank,
+    added_by_me: r.added_by_me === 1,
+    list_ids: r.list_ids_csv ? r.list_ids_csv.split(',') : []
+  }));
+
+  res.json({ visitor, lists, movies });
+});
+
+
 /* DELETE /api/visitor/:id — only succeeds if the visitor is "untouched":
    no name set AND no slot in any list. Used by the Details paste flow when
    a brand-new visitor adopts an existing ID and we want to recycle the

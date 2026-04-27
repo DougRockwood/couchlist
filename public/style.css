@@ -290,10 +290,11 @@ html, body {
    text would hide the black fill too — so the black lives on the parent
    and the gradient lives on the child span. */
 .tab-couch {
+  position: relative;                  /* anchor for My Shelf absolute overlay */
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 68px;
+  min-width: 136px;                    /* ≈ 2× a 68px square user tab */
   padding: 0 8px;
   font-size: 22px;
   font-weight: 600;
@@ -301,11 +302,60 @@ html, body {
   background: #000000;
 }
 
+/* Two-line stack: nickname on top (small), "Couch List" on bottom (big). */
+.tab-couch-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.05;
+  width: 100%;
+}
+
 .tab-couch-text {
   background: var(--rdy-gradient);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+.tab-couch-nickname {
+  font-size: 13px;                     /* small — nickname is the subtitle */
+  font-weight: 500;
+  letter-spacing: 0;
+  margin-bottom: 2px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* My Shelf overlay — covers the right half of the Couch tab. Background
+   and text color are computed in JS (tintColor / darkenColor) from the
+   visitor's color so a "very dark version of your color" reads cleanly
+   on a "white but tinted your color" panel, regardless of hue. */
+.tab-myshelf-overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 50%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0 15px 15px 0;        /* match parent right-side rounding */
+  text-decoration: none;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1.05;
+  box-shadow: -1px 0 0 rgba(0,0,0,0.15);
+}
+.tab-myshelf-overlay .tab-myshelf-line {
+  font-size: 14px;
+}
+.tab-myshelf-overlay:hover {
+  filter: brightness(1.04);
 }
 
 /* Visitor tab: 3-column / 2-row grid. Row 1 has the dots at the outer
@@ -1245,6 +1295,51 @@ html, body {
 }
 .tab-shelf-list.tab-dimmed {
   opacity: 0.55;                       /* NAW state — still legible */
+}
+
+/* Inline editor on an active list-tab — looks like the existing tab-name span
+   so the visual doesn't shift on tap. White text, transparent background. */
+.shelf-list-name-input {
+  field-sizing: content;
+  min-width: 4ch;
+  max-width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #fff;
+  font: inherit;
+  text-align: center;
+  padding: 0 4px;
+}
+.shelf-list-name-input::placeholder {
+  color: rgba(255,255,255,0.55);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.shelf-list-name-input:focus {
+  background: rgba(255,255,255,0.12);
+  border-radius: 6px;
+}
+
+/* "couchlist" sidebutton attached to the right of an active list-tab. */
+.tab-shelf-listlink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 68px;
+  padding: 0 10px;
+  background: #1a1a1a;
+  color: #fff;
+  text-decoration: none;
+  border-radius: 0 12px 12px 0;        /* attached-on-right look */
+  margin-left: -6px;                   /* swallow the tab-bar gap so it's literally attached */
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.tab-shelf-listlink:hover {
+  background: #333;
 }
 
 /* Step 6 — checkbox column on shelf entries (replaces .shelf-checkbox-cell

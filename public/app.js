@@ -242,14 +242,17 @@ function hideNameWarning() {
    ============================================================================ */
 
 async function loadList() {
-  const resp = await fetch(API + '/list/' + listId);
+  /* pass visitor_id so the response includes our private list nickname */
+  const resp = await fetch(API + '/list/' + listId
+    + (visitorId ? '?visitor_id=' + encodeURIComponent(visitorId) : ''));
 
   if (!resp.ok) {
     /* list doesn't exist yet — start with empty data */
     listData = {
       list: { id: listId },
       visitors: {},
-      movies: []
+      movies: [],
+      your_list_name: null
     };
   } else {
     listData = await resp.json();
@@ -1251,15 +1254,34 @@ function renderUserTabs() {
   const tabBar = document.getElementById('tab-bar');
   let html = '';
 
-  /* Couch tab — always first. Label is wrapped in .tab-couch-text so its
-     fill can be clipped to the RDY-gradient while the parent keeps its
-     solid black background (see style.css §4). */
+  /* Couch tab — always first. Two stacked centered lines: the visitor's
+     list nickname on top (or empty when not set), "Couch List" on bottom.
+     Both paint with the RDY-gradient via background-clip:text on the
+     wrapping span (the parent .tab-couch keeps its black background). */
+  const myListName = (listData && listData.your_list_name) || '';
   html += '<div class="tab tab-couch' + (activeTab === 'couch' ? ' tab-active' : '') + '" '
-    + 'data-tab="couch"><span class="tab-couch-text">Couch List</span></div>';
+    + 'data-tab="couch">'
+    + '<div class="tab-couch-stack">'
+    +   (myListName
+        ? '<span class="tab-couch-text tab-couch-nickname">'
+            + escapeHtml(myListName) + '</span>'
+        : '')
+    +   '<span class="tab-couch-text">Couch List</span>'
+    + '</div>'
+    /* My Shelf sub-tab overlay: only when the user's own user-tab is
+       active. Absolutely positioned over the right half of the Couch tab
+       so the left half stays tappable to switch back to Couch view. */
+    + (visitor && activeTab === visitorId
+      ? '<a class="tab-myshelf-overlay" href="/" '
+        +   'style="background:' + escapeHtml(tintColor(visitor.color))
+        +   ';color:' + escapeHtml(darkenColor(visitor.color)) + ';" '
+        +   'aria-label="My Shelf">'
+        +   '<span class="tab-myshelf-line">My</span>'
+        +   '<span class="tab-myshelf-line">Shelf</span>'
+        + '</a>'
+      : '')
+    + '</div>';
 
-  /* brand new visitor — "Type your name" tab renders immediately after
-     Couch so it's the obvious next thing to tap. Once they save a name
-     they get a real slot and their tab slides into slot order below. */
   if (!visitor) {
     html += '<div class="tab tab-mine tab-new">'
       + '<input id="name-input" class="tab-name-input" type="text" '
@@ -1267,7 +1289,6 @@ function renderUserTabs() {
       + '</div>';
   }
 
-  /* one tab per visitor in slot order — including your own */
   const sortedSlots = Object.keys(listData.visitors).sort((a, b) => a - b);
   sortedSlots.forEach(slot => {
     const v = listData.visitors[slot];
@@ -1985,6 +2006,37 @@ function formatYear(releaseDate) {
    could still be broken out of by a malicious value. This version handles
    all five HTML-significant characters explicitly. The `&` substitution
    MUST run first so we don't double-escape later substitutions. */
+/* Derived-color helpers used by the My Shelf overlay on the Couchlist page.
+   Visitor colors come in as either `#rrggbb` (from the native picker) or
+   `hsl(h,s%,l%)` (from randomColor()). We darken for text, lighten for bg. */
+function darkenColor(c) {
+  if (!c) return '#1a1a1a';
+  let m = c.match(/^hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*\d+%\s*\)$/);
+  if (m) return 'hsl(' + m[1] + ', ' + m[2] + '%, 22%)';
+  m = c.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (m) {
+    const r = Math.round(parseInt(m[1], 16) * 0.35);
+    const g = Math.round(parseInt(m[2], 16) * 0.35);
+    const b = Math.round(parseInt(m[3], 16) * 0.35);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
+  return '#1a1a1a';
+}
+function tintColor(c) {
+  if (!c) return '#f0f0f0';
+  let m = c.match(/^hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*\d+%\s*\)$/);
+  if (m) return 'hsl(' + m[1] + ', ' + m[2] + '%, 90%)';
+  m = c.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (m) {
+    const r = parseInt(m[1], 16),
+          g = parseInt(m[2], 16),
+          b = parseInt(m[3], 16);
+    const mix = (v) => Math.round(v * 0.2 + 255 * 0.8);
+    return 'rgb(' + mix(r) + ',' + mix(g) + ',' + mix(b) + ')';
+  }
+  return '#f0f0f0';
+}
+
 function escapeHtml(text) {
   if (!text) return '';
   return String(text)
@@ -2427,13 +2479,11 @@ function renderShelfTabs () {
     + '<span class="tab-name">' + escapeHtml(v.name || '') + '</span>'
     + '</div>';
 
-  /* one black list-tab per joined list. Step 7 will let users edit list_name
-     inline and pretty-up the visual; for now plain black with the nickname
-     or a list-id stub. */
+  /* one list-tab per joined list. When active, the nickname becomes editable
+     (tap-again-to-edit, like the username) and a "couchlist" sidebutton is
+     attached on the right. */
   shelfData.lists.forEach(l => {
-    const label = l.list_name && l.list_name.trim()
-      ? l.list_name
-      : l.id;
+    const label = l.list_name && l.list_name.trim() ? l.list_name : l.id;
     const isActive = activeTab === l.id;
     const ready = l.ready;
     html += '<div class="tab tab-shelf-list'
@@ -2443,12 +2493,38 @@ function renderShelfTabs () {
       + '<span class="tab-ready-btn ' + (ready ? 'ready' : 'not-ready') + '" '
       +   'data-shelf-rdy-list="' + escapeHtml(l.id) + '">'
       +   (ready ? 'RDY' : 'NAW')
-      + '</span>'
-      + '<span class="tab-name">' + escapeHtml(label) + '</span>'
-      + '</div>';
+      + '</span>';
+
+    if (isActive) {
+      /* active list-tab: nickname is an inline-editable input. Pre-filled
+         with the current nickname; placeholder shows the list ID otherwise. */
+      html += '<input class="tab-name-input shelf-list-name-input" type="text" '
+        +   'value="' + escapeHtml(l.list_name || '') + '" '
+        +   'placeholder="' + escapeHtml(l.id) + '" '
+        +   'autocomplete="off" maxlength="12" '
+        +   'data-list-id="' + escapeHtml(l.id) + '">';
+    } else {
+      html += '<span class="tab-name">' + escapeHtml(label) + '</span>';
+    }
+    html += '</div>';
+
+    /* attached "couchlist" button — appears immediately after the active
+       list-tab. Tapping it navigates to the actual Couchlist URL. */
+    if (isActive) {
+      html += '<a class="tab-shelf-listlink" href="/' + encodeURIComponent(l.id) + '">couchlist</a>';
+    }
   });
 
   tabBar.innerHTML = html;
+}
+
+async function commitShelfListName (listId, newName) {
+  await fetch(API + '/list/' + listId + '/list-name', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: visitorId, list_name: newName })
+  });
+  await loadShelf();
 }
 
 function renderShelfMovieList () {
@@ -2707,7 +2783,7 @@ function setupShelfEventListeners () {
     refreshShelfSelectAllLabel();
   });
 
-  /* Name entry on the bare shell. Once they save a name we re-render. */
+  /* Name entry on the bare shell + list nickname commit on Enter/blur. */
   document.addEventListener('keydown', async (e) => {
     if (e.target && e.target.id === 'name-input' && e.key === 'Enter') {
       const text = e.target.value.trim();
@@ -2720,6 +2796,25 @@ function setupShelfEventListeners () {
       });
       visitor = await resp.json();
       await loadShelf();
+    }
+    if (e.target && e.target.classList
+        && e.target.classList.contains('shelf-list-name-input')
+        && e.key === 'Enter') {
+      e.preventDefault();
+      e.target.blur();                                              /* triggers focusout commit */
+    }
+  });
+
+  /* commit the list-nickname input when the user moves focus away */
+  document.addEventListener('focusout', async (e) => {
+    if (e.target && e.target.classList
+        && e.target.classList.contains('shelf-list-name-input')) {
+      const listId = e.target.dataset.listId;
+      const newName = (e.target.value || '').trim();
+      const lst = shelfData && shelfData.lists.find(l => l.id === listId);
+      const oldName = lst ? (lst.list_name || '') : '';
+      if (newName === oldName) return;                              /* no-op */
+      await commitShelfListName(listId, newName);
     }
   });
 }

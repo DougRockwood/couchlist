@@ -867,17 +867,19 @@ app.delete('/api/visitor/:id', (req, res) => {
 
 app.get('/api/list/:id', (req, res) => {
   const listId = req.params.id;
+  /* If ?visitor_id=xxx is passed AND that visitor is on this list, the
+     response includes `your_list_name` (their per-user nickname for the
+     list). Other visitors' nicknames stay private. */
+  const requesterId = req.query.visitor_id;
 
-  /* fetch the list itself */
   const list = db.prepare('SELECT * FROM lists WHERE id = ?').get(listId);
   if (!list) return res.status(404).json({ error: 'list not found' });
 
-  /* fetch all movies — they already contain ranks and comments inline */
   const movies = db.prepare('SELECT * FROM movies WHERE list_id = ?').all(listId);
 
-  /* fetch slot assignments and look up each visitor's profile */
   const slots = db.prepare('SELECT * FROM list_visitors WHERE list_id = ?').all(listId);
-  const visitors = {};                                             // keyed by slot number
+  const visitors = {};
+  let yourListName = null;
   slots.forEach(s => {
     const v = db.prepare('SELECT * FROM visitors WHERE id = ?').get(s.visitor_id);
     if (v) {
@@ -886,9 +888,12 @@ app.get('/api/list/:id', (req, res) => {
         ready: s.ready !== 0
       };
     }
+    if (requesterId && s.visitor_id === requesterId) {
+      yourListName = s.list_name || null;
+    }
   });
 
-  res.json({ list, visitors, movies });
+  res.json({ list, visitors, movies, your_list_name: yourListName });
 });
 
 
@@ -1340,6 +1345,42 @@ app.put('/api/list/:id/ready', (req, res) => {
   ).run(ready ? 1 : 0, listId, visitor_id);
 
   res.json({ ok: true });
+});
+
+
+/* ============================================================================
+   SECTION 10e: SET LIST NICKNAME — PUT /api/list/:id/list-name  (step 7)
+   ============================================================================
+   Per-user nickname for a list (max 12 chars). Lives in list_visitors so
+   each visitor's nickname is private — others don't see your label for the
+   list. Empty string clears the nickname.
+
+   Body: { visitor_id, list_name }
+   ============================================================================ */
+
+app.put('/api/list/:id/list-name', (req, res) => {
+  const listId = req.params.id;
+  const { visitor_id, list_name } = req.body;
+
+  /* validate */
+  if (typeof list_name !== 'string') {
+    return res.status(400).json({ error: 'list_name must be a string' });
+  }
+  const trimmed = list_name.trim();
+  if (trimmed.length > 12) {
+    return res.status(400).json({ error: 'list_name max 12 chars' });
+  }
+
+  const slotRow = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+  ).get(listId, visitor_id);
+  if (!slotRow) return res.status(400).json({ error: 'visitor not on this list' });
+
+  db.prepare(
+    'UPDATE list_visitors SET list_name = ? WHERE list_id = ? AND visitor_id = ?'
+  ).run(trimmed === '' ? null : trimmed, listId, visitor_id);
+
+  res.json({ ok: true, list_name: trimmed === '' ? null : trimmed });
 });
 
 

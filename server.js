@@ -131,6 +131,119 @@ try {
 
 
 /* ============================================================================
+   SECTION 2b: MY SHELF SCHEMA  (added 2026-04-26)
+   ============================================================================
+   Major redesign in progress: every visitor gets one canonical ordering of
+   every movie they've encountered. Per-list rankings become projections of
+   this master order. See planning notes (chat 2026-04-26) for the full plan.
+
+   user_movies   — visitor's master ranking. One row per (visitor, movie key).
+                   Movie key is (tmdb_id, media_type) so the SAME tmdb item on
+                   two different lists is the SAME row here. master_rank is a
+                   contiguous 1..N sequence per visitor; reordering on any list
+                   rewrites this sequence and re-projects per-list ranks.
+
+   lists.private + lists.owner_visitor_id
+                 — flags a "solo list" (per-user private stash, formerly
+                   "no one can know"). Solo list ID convention: first 8 chars
+                   of the owner's 10-char visitor ID. Only owner can read or
+                   mutate. Created lazily; not bootstrapped here.
+
+   list_visitors.list_name
+                 — per-user nickname for a list (max 12 chars, displayed
+                   above "couchlist" in the tab). Strictly per-viewer; other
+                   visitors do not see your nickname for the list.
+
+   Step 1 of the rollout is purely additive: existing user1_rank..user10_rank
+   columns remain authoritative. The bootstrap below populates user_movies so
+   later steps can flip the source-of-truth without a backfill at that point. */
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_movies (
+    visitor_id   TEXT    NOT NULL,
+    tmdb_id      INTEGER NOT NULL,
+    media_type   TEXT    NOT NULL,
+    master_rank  INTEGER NOT NULL,
+    PRIMARY KEY (visitor_id, tmdb_id, media_type)
+  );
+  CREATE INDEX IF NOT EXISTS user_movies_by_rank
+    ON user_movies(visitor_id, master_rank);
+`);
+
+try {
+  db.exec('ALTER TABLE lists ADD COLUMN private INTEGER NOT NULL DEFAULT 0');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
+try {
+  db.exec('ALTER TABLE lists ADD COLUMN owner_visitor_id TEXT');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
+try {
+  db.exec('ALTER TABLE list_visitors ADD COLUMN list_name TEXT');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
+
+/* Bootstrap user_movies from existing per-list rankings.
+
+   For each visitor, walk every list they're on in (lists.created, list_id)
+   order. Within each list, walk movies in that visitor's per-list rank order
+   (rank 1 first). Append each movie key (tmdb_id, media_type) to the visitor's
+   master order if it's not already there. Result: a contiguous 1..N master
+   ranking per visitor, biased toward how they ranked their FIRST list when
+   the same movie appears in multiple lists.
+
+   Idempotent: if a visitor already has any user_movies rows, skip them — the
+   bootstrap has already run for that visitor in a prior boot. */
+
+(function bootstrapUserMovies () {
+  const visitorsWithSlots = db.prepare(`
+    SELECT DISTINCT visitor_id FROM list_visitors
+  `).all();
+
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO user_movies (visitor_id, tmdb_id, media_type, master_rank)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  const tx = db.transaction(() => {
+    for (const { visitor_id } of visitorsWithSlots) {
+      const already = db.prepare(
+        'SELECT 1 FROM user_movies WHERE visitor_id = ? LIMIT 1'
+      ).get(visitor_id);
+      if (already) continue;                                       // already bootstrapped
+
+      const memberships = db.prepare(`
+        SELECT lv.list_id, lv.slot, l.created
+        FROM list_visitors lv
+        JOIN lists l ON l.id = lv.list_id
+        WHERE lv.visitor_id = ?
+        ORDER BY l.created, lv.list_id
+      `).all(visitor_id);
+
+      const seen = new Set();
+      let nextRank = 1;
+      for (const m of memberships) {
+        const col = 'user' + m.slot + '_rank';
+        const movies = db.prepare(
+          'SELECT tmdb_id, media_type, ' + col + ' AS rank '
+          + 'FROM movies WHERE list_id = ? AND tmdb_id IS NOT NULL '
+          + 'ORDER BY ' + col + ' IS NULL, ' + col + ', id'
+        ).all(m.list_id);
+
+        for (const mv of movies) {
+          const key = mv.tmdb_id + ':' + mv.media_type;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          insert.run(visitor_id, mv.tmdb_id, mv.media_type, nextRank++);
+        }
+      }
+    }
+  });
+  tx();
+})();
+
+
+/* ============================================================================
    SECTION 3: MIDDLEWARE
    ============================================================================ */
 

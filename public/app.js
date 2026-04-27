@@ -31,7 +31,7 @@
    SECTION 1: CONSTANTS
    ============================================================================ */
 
-const TMDB_API_KEY  = '50f0ec96e69aa677d94e2977722686b4';
+const TMDB_API_KEY  = 'bb37c18bfeb7c0d06d9106291b13317b';
 const TMDB_BASE     = 'https://api.themoviedb.org/3';
 const TMDB_IMG      = 'https://image.tmdb.org/t/p/';
 const API           = '/api';

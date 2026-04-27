@@ -1228,3 +1228,21 @@ html, body {
 .shelf-checkbox-cell {
   /* placeholder cell where comments live in list mode; populated in step 6 */
 }
+
+/* List tabs in shelf mode (step 5) — black background with the list nickname.
+   Step 7 will change geometry + colors when we settle the visual language;
+   for now we just want them visible and clickable. */
+.tab-shelf-list {
+  background: #1a1a1a;
+  color: #fff;
+}
+.tab-shelf-list .tab-name {
+  color: #fff;
+}
+.tab-shelf-list.tab-active {
+  outline: 2px solid #1a1a1a;
+  outline-offset: -1px;
+}
+.tab-shelf-list.tab-dimmed {
+  opacity: 0.55;                       /* NAW state — still legible */
+}

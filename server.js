@@ -547,14 +547,19 @@ app.put('/api/visitor/:id', (req, res) => {
      {
        visitor: { id, name, color },
        lists:   [ { id, list_name, ready, slot, private, owner_visitor_id, created } ],
-       movies:  [ { tmdb_id, media_type, title, year, poster, master_rank,
-                    added_by_me, list_ids: [string, ...] } ]
+       movies:  [ {
+         tmdb_id, media_type, title, year, poster, master_rank,
+         added_by_me,            // true if adder on AT LEAST one list this movie is on
+         list_entries: [
+           { list_id, movie_id, added_here }   // one row per (movie key, list)
+         ]
+       } ]
      }
 
-   Movies are sorted by master_rank ascending. `added_by_me` is true if the
-   visitor was the adder on AT LEAST one list this movie is on. `list_ids`
-   contains every list the movie is on AND the visitor is also on (we never
-   leak movies from lists they aren't a member of).
+   Movies are sorted by master_rank ascending. The visitor only ever sees
+   list_entries for lists THEY are also on (we never leak movies from lists
+   they aren't a member of). `added_here` lets the frontend choose whether
+   to render an X-to-remove on a per-list-tab row.
 
    404 if the visitor row doesn't exist; an empty shelf is returned for
    visitors who exist but have no list memberships yet. */
@@ -581,34 +586,49 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
     created: r.created
   }));
 
-  const movieRows = db.prepare(`
+  /* one row per (movie key, list this visitor is on); group in JS so each
+     grouped row carries the per-list movie_id + added_here flag */
+  const rawRows = db.prepare(`
     SELECT
-      m.tmdb_id, m.media_type,
-      MIN(m.title)  AS title,
-      MIN(m.year)   AS year,
-      MIN(m.poster) AS poster,
-      um.master_rank,
-      GROUP_CONCAT(DISTINCT m.list_id) AS list_ids_csv,
-      MAX(CASE WHEN m.added_by = ? THEN 1 ELSE 0 END) AS added_by_me
+      m.tmdb_id, m.media_type, m.title, m.year, m.poster,
+      m.id AS movie_id, m.list_id, m.added_by,
+      um.master_rank
     FROM movies m
     JOIN user_movies um
       ON um.visitor_id = ? AND um.tmdb_id = m.tmdb_id AND um.media_type = m.media_type
     JOIN list_visitors lv
       ON lv.list_id = m.list_id AND lv.visitor_id = ?
-    GROUP BY m.tmdb_id, m.media_type, um.master_rank
-    ORDER BY um.master_rank
-  `).all(vid, vid, vid);
+    ORDER BY um.master_rank, m.list_id
+  `).all(vid, vid);
 
-  const movies = movieRows.map(r => ({
-    tmdb_id: r.tmdb_id,
-    media_type: r.media_type,
-    title: r.title,
-    year: r.year,
-    poster: r.poster,
-    master_rank: r.master_rank,
-    added_by_me: r.added_by_me === 1,
-    list_ids: r.list_ids_csv ? r.list_ids_csv.split(',') : []
-  }));
+  const byKey = new Map();                                            // (tmdb_id|media_type) → grouped movie
+  for (const r of rawRows) {
+    const k = r.tmdb_id + '|' + r.media_type;
+    let group = byKey.get(k);
+    if (!group) {
+      group = {
+        tmdb_id: r.tmdb_id,
+        media_type: r.media_type,
+        title: r.title,
+        year: r.year,
+        poster: r.poster,
+        master_rank: r.master_rank,
+        added_by_me: false,
+        list_entries: []
+      };
+      byKey.set(k, group);
+    }
+    const addedHere = r.added_by === vid;
+    group.list_entries.push({
+      list_id: r.list_id,
+      movie_id: r.movie_id,
+      added_here: addedHere
+    });
+    if (addedHere) group.added_by_me = true;
+  }
+  /* sorted by master_rank because the source query was sorted that way and
+     Map preserves insertion order */
+  const movies = Array.from(byKey.values());
 
   res.json({ visitor, lists, movies });
 });

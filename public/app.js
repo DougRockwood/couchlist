@@ -874,7 +874,12 @@ function onDragPointerUp(e) {
   }
 
   if (appMode === 'shelf') {
-    commitShelfReorder(orderedShelfKeys);
+    if (activeTab === 'me') {
+      commitShelfReorder(orderedShelfKeys);
+    } else {
+      /* list-tab in shelf mode: activeTab is a list_id, entries carry per-list movie_ids */
+      commitShelfListReorder(activeTab, orderedMovieIds);
+    }
   } else {
     commitReorder(orderedMovieIds);
   }
@@ -2338,18 +2343,9 @@ function renderShelfBare () {
 }
 
 function renderShelf () {
-  /* Tab bar — just the user tab for now. Step 5 adds list tabs alongside. */
-  const v = shelfData.visitor;
-  const tabBar = document.getElementById('tab-bar');
-  const colorAttr = v.color ? ('background:' + escapeHtml(v.color) + ';') : '';
-  tabBar.innerHTML =
-    '<div class="tab tab-user tab-mine tab-active" data-tab="me" style="' + colorAttr + '">'
-    +   '<span class="tab-name">' + escapeHtml(v.name || '') + '</span>'
-    + '</div>';
-
-  /* Search row: the search box and color-dot stay hidden for step 4 (search
-     is wired to auto-add to the solo list, which lands in step 8). The Help
-     button stays. The INFO button hides — Manage replaces it in step 6. */
+  /* Search row: the search box and color-dot stay hidden for now (search auto-
+     adds to the solo list — step 8). The Help button stays. The INFO button
+     hides because Manage will replace it (step 6). */
   const searchBox = document.getElementById('search-box');
   const welcome   = document.getElementById('welcome-msg');
   const colorDot  = document.getElementById('my-color-dot');
@@ -2359,34 +2355,111 @@ function renderShelf () {
   const infoBtn = document.querySelector('.action-btn[data-action="info"]');
   if (infoBtn) infoBtn.style.display = 'none';
 
-  /* Movie list — only movies this visitor added, sorted by master_rank.
-     A movie a user added on multiple lists shows once; list_ids is in the
-     dataset for later step 5 / 6 use. */
-  const ml = document.getElementById('movie-list');
-  const myMovies = shelfData.movies.filter(m => m.added_by_me);
+  /* default to the user-tab view if activeTab isn't already a known list */
+  const knownTab =
+    activeTab === 'me' ||
+    (shelfData.lists && shelfData.lists.some(l => l.id === activeTab));
+  if (!knownTab) activeTab = 'me';
 
-  if (myMovies.length === 0) {
-    ml.innerHTML = '<div class="shelf-empty">'
-      + 'No movies added yet. Visit a list and add something — it will show up here.'
+  renderShelfTabs();
+  renderShelfMovieList();
+}
+
+function renderShelfTabs () {
+  const v = shelfData.visitor;
+  const tabBar = document.getElementById('tab-bar');
+  const userColor = v.color ? ('background:' + escapeHtml(v.color) + ';') : '';
+
+  let html = '<div class="tab tab-user tab-mine'
+    + (activeTab === 'me' ? ' tab-active' : '')
+    + '" data-shelf-tab="me" style="' + userColor + '">'
+    + '<span class="tab-name">' + escapeHtml(v.name || '') + '</span>'
+    + '</div>';
+
+  /* one black list-tab per joined list. Step 7 will let users edit list_name
+     inline and pretty-up the visual; for now plain black with the nickname
+     or a list-id stub. */
+  shelfData.lists.forEach(l => {
+    const label = l.list_name && l.list_name.trim()
+      ? l.list_name
+      : l.id;
+    const isActive = activeTab === l.id;
+    const ready = l.ready;
+    html += '<div class="tab tab-shelf-list'
+      + (isActive ? ' tab-active' : '')
+      + (ready ? '' : ' tab-dimmed')
+      + '" data-shelf-tab="' + escapeHtml(l.id) + '">'
+      + '<span class="tab-ready-btn ' + (ready ? 'ready' : 'not-ready') + '" '
+      +   'data-shelf-rdy-list="' + escapeHtml(l.id) + '">'
+      +   (ready ? 'RDY' : 'NAW')
+      + '</span>'
+      + '<span class="tab-name">' + escapeHtml(label) + '</span>'
       + '</div>';
+  });
+
+  tabBar.innerHTML = html;
+}
+
+function renderShelfMovieList () {
+  const ml = document.getElementById('movie-list');
+
+  if (activeTab === 'me') {
+    /* "Your" tab — only movies this visitor added (across any list).
+       Drag commits via /shelf-ranks (key-based). */
+    const myMovies = shelfData.movies.filter(m => m.added_by_me);
+    if (myMovies.length === 0) {
+      ml.innerHTML = '<div class="shelf-empty">'
+        + 'No movies added yet. Visit a list and add something — it will show up here.'
+        + '</div>';
+      return;
+    }
+    ml.innerHTML = '';
+    myMovies.forEach((m, i) => {
+      ml.appendChild(renderShelfEntry(m, i + 1, /* listId */ null));
+    });
+    return;
+  }
+
+  /* Otherwise activeTab is a list_id — show every movie on that list,
+     sorted by master_rank. Each entry carries the per-list movie_id so
+     drag (commit via /list/:id/my-ranks) and X-to-remove work. */
+  const listId = activeTab;
+  const onList = shelfData.movies
+    .map(m => {
+      const e = m.list_entries.find(le => le.list_id === listId);
+      return e ? { movie: m, entry: e } : null;
+    })
+    .filter(Boolean);
+
+  if (onList.length === 0) {
+    ml.innerHTML = '<div class="shelf-empty">No movies on this list yet.</div>';
     return;
   }
 
   ml.innerHTML = '';
-  myMovies.forEach((m, i) => {
-    ml.appendChild(renderShelfEntry(m, i + 1));
+  onList.forEach((row, i) => {
+    ml.appendChild(renderShelfEntry(row.movie, i + 1, listId, row.entry));
   });
 }
 
-function renderShelfEntry (movie, position) {
+/* `listEntry` is the per-list `{list_id, movie_id, added_here}` row when
+   rendering inside a list-tab; null when rendering inside the "your" tab. */
+function renderShelfEntry (movie, position, listId, listEntry) {
   const entry = document.createElement('div');
   entry.className = 'entry shelf-entry';
   entry.dataset.tmdbId    = movie.tmdb_id;
   entry.dataset.mediaType = movie.media_type;
-  /* movieId stays empty in shelf mode — drag commit reads tmdb-id+media-type. */
+  if (listEntry) entry.dataset.movieId = listEntry.movie_id;       // list-tab drag commits by movie_id
 
   const posterUrl = movie.poster ? TMDB_IMG + 'w92' + movie.poster : '';
   const yearText  = (movie.year != null) ? movie.year : '';
+
+  /* X-to-remove: shown on list-tab rows where the visitor was the adder.
+     User-tab X (multi-list confirm) lands in step 6 with the Manage modal. */
+  const removeHtml = (listEntry && listEntry.added_here)
+    ? '<button class="remove-btn" data-movie-id="' + listEntry.movie_id
+        + '" data-list-id="' + escapeHtml(listId) + '">✕</button>'
+    : '';
 
   entry.innerHTML =
     '<div class="entry-rank">'
@@ -2407,9 +2480,9 @@ function renderShelfEntry (movie, position) {
         + escapeHtml(movie.title) + (yearText !== '' ? ' (' + yearText + ')' : '')
       + '</div>'
     + '</div>'
-    /* placeholders so the existing 6-col grid still aligns; populated in later steps */
+    /* placeholder where checkboxes will live in step 6 */
     + '<div class="entry-comments shelf-checkbox-cell"></div>'
-    + '<div class="entry-remove"></div>';
+    + '<div class="entry-remove">' + removeHtml + '</div>';
   return entry;
 }
 
@@ -2422,24 +2495,105 @@ async function commitShelfReorder (orderedKeys) {
   await loadShelf();
 }
 
+async function commitShelfListReorder (listId, orderedMovieIds) {
+  await fetch(API + '/list/' + listId + '/my-ranks', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: visitorId, ordered_movie_ids: orderedMovieIds })
+  });
+  await loadShelf();
+}
+
+async function shelfRemoveFromList (listId, movieId) {
+  await fetch(API + '/list/' + listId + '/movies/' + movieId, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: visitorId })
+  });
+  await loadShelf();
+}
+
+async function shelfToggleReady (listId) {
+  const lst = shelfData.lists.find(l => l.id === listId);
+  if (!lst) return;
+  const newReady = !lst.ready;
+  /* optimistic */
+  lst.ready = newReady;
+  renderShelfTabs();
+  try {
+    await fetch(API + '/list/' + listId + '/ready', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visitor_id: visitorId, ready: newReady })
+    });
+  } catch (e) { /* keep optimistic state — server retry happens on next loadShelf */ }
+  await loadShelf();
+}
+
 function setupShelfEventListeners () {
   /* Drag — same handler as list mode, branches on appMode internally. */
   document.addEventListener('pointerdown', onGrabPointerDown);
 
-  /* Help button — reuses the existing modal (already covers the Couchlist
-     side; in step 5/7 we'll add a My Shelf-specific version). */
+  /* Help button — reuses the existing modal (which is still list-mode-flavored;
+     a shelf-specific version arrives in step 7). */
   document.addEventListener('click', e => {
-    const helpBtn = e.target.closest('.action-btn[data-action="howto"]');
-    if (helpBtn) { openHowToModal(); return; }
+    if (e.target.closest('.action-btn[data-action="howto"]')) {
+      openHowToModal();
+      return;
+    }
+
+    /* RDY/NAW on a list tab — must run BEFORE the tab-switch handler since
+       the button lives inside the tab. */
+    const rdy = e.target.closest('.tab-ready-btn[data-shelf-rdy-list]');
+    if (rdy) {
+      e.stopPropagation();
+      shelfToggleReady(rdy.dataset.shelfRdyList);
+      return;
+    }
+
+    /* X-to-remove on a list-tab entry. The button only renders when the
+       visitor was the adder on this list, so the server-side check is
+       a redundant safety net. */
+    const remove = e.target.closest('.remove-btn[data-list-id]');
+    if (remove) {
+      e.stopPropagation();
+      shelfRemoveFromList(remove.dataset.listId, parseInt(remove.dataset.movieId));
+      return;
+    }
+
+    /* Tab switch — clicking anywhere on a shelf tab (except buttons handled
+       above) makes it active. */
+    const tab = e.target.closest('.tab[data-shelf-tab]');
+    if (tab) {
+      const newTab = tab.dataset.shelfTab;
+      if (newTab !== activeTab) {
+        activeTab = newTab;
+        renderShelfTabs();
+        renderShelfMovieList();
+      }
+      return;
+    }
+
+    /* Movie popup show — clicking poster or title. */
+    const popupTarget = e.target.closest('.entry-poster, .entry-title');
+    if (popupTarget) {
+      const tmdbId    = parseInt(popupTarget.dataset.tmdbId);
+      const mediaType = popupTarget.dataset.mediaType || 'movie';
+      if (tmdbId) showMoviePopup(tmdbId, mediaType);
+      return;
+    }
+
+    /* Movie popup hide — click outside. */
+    if (e.target.closest('.popup-content')) return;
+    const popup = document.getElementById('movie-popup');
+    if (popup && popup.style.display === 'block') hideMoviePopup();
   });
 
-  /* Name entry on the bare shell. Once they save a name we re-render
-     (loadShelf will refetch — even an empty shelf is fine). */
+  /* Name entry on the bare shell. Once they save a name we re-render. */
   document.addEventListener('keydown', async (e) => {
     if (e.target && e.target.id === 'name-input' && e.key === 'Enter') {
       const text = e.target.value.trim();
       if (!text) return;
-      /* set the visitor's name and color globally, then re-load the shelf */
       const color = randomColor();
       const resp = await fetch(API + '/visitor/' + visitorId, {
         method: 'PUT',
@@ -2449,20 +2603,6 @@ function setupShelfEventListeners () {
       visitor = await resp.json();
       await loadShelf();
     }
-  });
-
-  /* Movie popup on poster/title — reuse showMoviePopup. */
-  document.addEventListener('click', e => {
-    const target = e.target.closest('.entry-poster, .entry-title');
-    if (!target) return;
-    const tmdbId    = parseInt(target.dataset.tmdbId);
-    const mediaType = target.dataset.mediaType || 'movie';
-    if (tmdbId) showMoviePopup(tmdbId, mediaType);
-  });
-  document.addEventListener('click', e => {
-    if (e.target.closest('.entry-poster, .entry-title, .popup-content')) return;
-    const popup = document.getElementById('movie-popup');
-    if (popup && popup.style.display === 'block') hideMoviePopup();
   });
 }
 

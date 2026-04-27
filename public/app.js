@@ -71,6 +71,15 @@ let expandedComment   = null;
 let movieDetailCache  = {};
 let displayNames      = {};
 
+/* Shelf-only state — set in shelf mode, ignored in list mode.
+   `shelfSelected === null` means "uninitialized for the current tab" —
+   the renderer fills it with everything checked on first render. The user
+   explicitly unchecking all leaves it as an empty Set, NOT null, so we
+   don't auto-recheck behind their back. */
+let shelfSelected     = null;
+let shelfManageOpen   = false;                                     // is the Manage modal up?
+let shelfReadySnap    = null;                                      // RDY snapshot taken at modal-open
+
 
 /* ============================================================================
    SECTION 3: INITIALIZATION — initApp()
@@ -2344,8 +2353,8 @@ function renderShelfBare () {
 
 function renderShelf () {
   /* Search row: the search box and color-dot stay hidden for now (search auto-
-     adds to the solo list — step 8). The Help button stays. The INFO button
-     hides because Manage will replace it (step 6). */
+     adds to the solo list — step 8). The Help button stays. INFO is gone;
+     ALL/NONE and Manage replace it. */
   const searchBox = document.getElementById('search-box');
   const welcome   = document.getElementById('welcome-msg');
   const colorDot  = document.getElementById('my-color-dot');
@@ -2354,6 +2363,9 @@ function renderShelf () {
   if (colorDot)  colorDot.style.display = 'none';
   const infoBtn = document.querySelector('.action-btn[data-action="info"]');
   if (infoBtn) infoBtn.style.display = 'none';
+  document.querySelectorAll('.action-btn.shelf-only').forEach(b => {
+    b.style.display = '';
+  });
 
   /* default to the user-tab view if activeTab isn't already a known list */
   const knownTab =
@@ -2363,6 +2375,45 @@ function renderShelf () {
 
   renderShelfTabs();
   renderShelfMovieList();
+}
+
+/* Identifier used both as data-shelf-key on the entry div AND as the
+   Set entry in shelfSelected. User-tab keys are `tmdb_id:media_type`;
+   list-tab keys are `m:<movie_id>` so they never collide. */
+function shelfEntryKey (movie, listEntry) {
+  return listEntry
+    ? 'm:' + listEntry.movie_id
+    : movie.tmdb_id + ':' + movie.media_type;
+}
+
+function shelfVisibleKeys () {
+  if (activeTab === 'me') {
+    return shelfData.movies
+      .filter(m => m.added_by_me)
+      .map(m => shelfEntryKey(m, null));
+  }
+  /* list-tab */
+  const out = [];
+  shelfData.movies.forEach(m => {
+    const e = m.list_entries.find(le => le.list_id === activeTab);
+    if (e) out.push(shelfEntryKey(m, e));
+  });
+  return out;
+}
+
+function refreshShelfSelectAllLabel () {
+  const btn = document.querySelector('.action-btn[data-action="select-all"]');
+  if (!btn) return;
+  const visible = shelfVisibleKeys();
+  /* null = "uninitialized → defaults to all checked" */
+  const allSelected = shelfSelected === null
+    ? visible.length > 0
+    : (visible.length > 0 && visible.every(k => shelfSelected.has(k)));
+  btn.textContent = allSelected ? 'NONE' : 'ALL';
+}
+
+function selectAllVisible () {
+  shelfVisibleKeys().forEach(k => shelfSelected.add(k));
 }
 
 function renderShelfTabs () {
@@ -2403,26 +2454,38 @@ function renderShelfTabs () {
 function renderShelfMovieList () {
   const ml = document.getElementById('movie-list');
 
+  /* default selection on first render of a tab: everything checked.
+     null sentinel → fill with all visible. Empty-but-non-null Set means
+     the user deliberately unchecked everything; respect that. */
+  const visible = shelfVisibleKeys();
+  if (shelfSelected === null) {
+    shelfSelected = new Set(visible);
+  } else {
+    /* drop selections that no longer apply (data refresh removed an entry) */
+    const visibleSet = new Set(visible);
+    Array.from(shelfSelected).forEach(k => {
+      if (!visibleSet.has(k)) shelfSelected.delete(k);
+    });
+  }
+
   if (activeTab === 'me') {
-    /* "Your" tab — only movies this visitor added (across any list).
-       Drag commits via /shelf-ranks (key-based). */
     const myMovies = shelfData.movies.filter(m => m.added_by_me);
     if (myMovies.length === 0) {
       ml.innerHTML = '<div class="shelf-empty">'
         + 'No movies added yet. Visit a list and add something — it will show up here.'
         + '</div>';
+      refreshShelfSelectAllLabel();
       return;
     }
     ml.innerHTML = '';
     myMovies.forEach((m, i) => {
-      ml.appendChild(renderShelfEntry(m, i + 1, /* listId */ null));
+      ml.appendChild(renderShelfEntry(m, i + 1, null, null));
     });
+    refreshShelfSelectAllLabel();
     return;
   }
 
-  /* Otherwise activeTab is a list_id — show every movie on that list,
-     sorted by master_rank. Each entry carries the per-list movie_id so
-     drag (commit via /list/:id/my-ranks) and X-to-remove work. */
+  /* list-tab */
   const listId = activeTab;
   const onList = shelfData.movies
     .map(m => {
@@ -2433,6 +2496,7 @@ function renderShelfMovieList () {
 
   if (onList.length === 0) {
     ml.innerHTML = '<div class="shelf-empty">No movies on this list yet.</div>';
+    refreshShelfSelectAllLabel();
     return;
   }
 
@@ -2440,6 +2504,7 @@ function renderShelfMovieList () {
   onList.forEach((row, i) => {
     ml.appendChild(renderShelfEntry(row.movie, i + 1, listId, row.entry));
   });
+  refreshShelfSelectAllLabel();
 }
 
 /* `listEntry` is the per-list `{list_id, movie_id, added_here}` row when
@@ -2451,15 +2516,28 @@ function renderShelfEntry (movie, position, listId, listEntry) {
   entry.dataset.mediaType = movie.media_type;
   if (listEntry) entry.dataset.movieId = listEntry.movie_id;       // list-tab drag commits by movie_id
 
+  const key = shelfEntryKey(movie, listEntry);
+  entry.dataset.shelfKey = key;
+  const checked = shelfSelected.has(key);
+
   const posterUrl = movie.poster ? TMDB_IMG + 'w92' + movie.poster : '';
   const yearText  = (movie.year != null) ? movie.year : '';
 
-  /* X-to-remove: shown on list-tab rows where the visitor was the adder.
-     User-tab X (multi-list confirm) lands in step 6 with the Manage modal. */
-  const removeHtml = (listEntry && listEntry.added_here)
-    ? '<button class="remove-btn" data-movie-id="' + listEntry.movie_id
-        + '" data-list-id="' + escapeHtml(listId) + '">✕</button>'
-    : '';
+  /* X-to-remove. On list-tabs only entries the visitor added show one
+     (existing behavior). On the user-tab the X opens a multi-list confirm
+     popup that lists every list this movie is on (RDY ones default-checked). */
+  let removeHtml = '';
+  if (listEntry) {
+    if (listEntry.added_here) {
+      removeHtml = '<button class="remove-btn" data-movie-id="' + listEntry.movie_id
+        + '" data-list-id="' + escapeHtml(listId) + '">✕</button>';
+    }
+  } else {
+    /* user-tab: multi-list X popup. Always shown for movies the user added. */
+    removeHtml = '<button class="remove-btn shelf-multi-x" '
+      + 'data-tmdb-id="' + movie.tmdb_id
+      + '" data-media-type="' + escapeHtml(movie.media_type) + '">✕</button>';
+  }
 
   entry.innerHTML =
     '<div class="entry-rank">'
@@ -2480,8 +2558,10 @@ function renderShelfEntry (movie, position, listId, listEntry) {
         + escapeHtml(movie.title) + (yearText !== '' ? ' (' + yearText + ')' : '')
       + '</div>'
     + '</div>'
-    /* placeholder where checkboxes will live in step 6 */
-    + '<div class="entry-comments shelf-checkbox-cell"></div>'
+    + '<div class="entry-comments shelf-checkbox-cell">'
+      + '<input type="checkbox" class="shelf-cb" data-shelf-key="' + escapeHtml(key) + '"'
+      + (checked ? ' checked' : '') + '>'
+    + '</div>'
     + '<div class="entry-remove">' + removeHtml + '</div>';
   return entry;
 }
@@ -2562,15 +2642,43 @@ function setupShelfEventListeners () {
     }
 
     /* Tab switch — clicking anywhere on a shelf tab (except buttons handled
-       above) makes it active. */
+       above) makes it active. Reset checkbox selection so the new tab opens
+       with everything checked by default. */
     const tab = e.target.closest('.tab[data-shelf-tab]');
     if (tab) {
       const newTab = tab.dataset.shelfTab;
       if (newTab !== activeTab) {
         activeTab = newTab;
+        shelfSelected = null;             /* reset to "default to all checked" on the new tab */
         renderShelfTabs();
         renderShelfMovieList();
       }
+      return;
+    }
+
+    /* ALL/NONE — toggle all visible checkboxes. */
+    if (e.target.closest('.action-btn[data-action="select-all"]')) {
+      const visible = shelfVisibleKeys();
+      if (shelfSelected === null) shelfSelected = new Set(visible);
+      const allSelected = visible.length > 0 && visible.every(k => shelfSelected.has(k));
+      if (allSelected) shelfSelected.clear();
+      else             visible.forEach(k => shelfSelected.add(k));
+      renderShelfMovieList();
+      return;
+    }
+
+    /* Manage button — open modal. */
+    if (e.target.closest('.action-btn[data-action="manage"]')) {
+      openShelfManageModal();
+      return;
+    }
+
+    /* User-tab X (multi-list confirm). The data-tmdb-id signature is the
+       discriminator that splits this from the per-list X above. */
+    const multiX = e.target.closest('.remove-btn.shelf-multi-x');
+    if (multiX) {
+      e.stopPropagation();
+      openShelfMultiRemove(parseInt(multiX.dataset.tmdbId), multiX.dataset.mediaType);
       return;
     }
 
@@ -2589,6 +2697,16 @@ function setupShelfEventListeners () {
     if (popup && popup.style.display === 'block') hideMoviePopup();
   });
 
+  /* Checkbox toggle on shelf entries. */
+  document.addEventListener('change', e => {
+    const cb = e.target.closest('.shelf-cb');
+    if (!cb) return;
+    const k = cb.dataset.shelfKey;
+    if (cb.checked) shelfSelected.add(k);
+    else            shelfSelected.delete(k);
+    refreshShelfSelectAllLabel();
+  });
+
   /* Name entry on the bare shell. Once they save a name we re-render. */
   document.addEventListener('keydown', async (e) => {
     if (e.target && e.target.id === 'name-input' && e.key === 'Enter') {
@@ -2603,6 +2721,406 @@ function setupShelfEventListeners () {
       visitor = await resp.json();
       await loadShelf();
     }
+  });
+}
+
+
+/* ============================================================================
+   SECTION 16b: SHELF MANAGE MODAL  (step 6)
+   ============================================================================
+   Replaces the old Info/copy-paste flow on shelf-mode pages. Shows:
+     - editable text blob describing the current selection (RDY state is
+       captured at modal-open and frozen for the modal's lifetime, per spec)
+     - a list of joined lists with checkboxes — these are the destinations
+       for Copy / Remove
+     - Copy/Remove buttons — operate on (selected entries) × (checked dests)
+     - Add/Create list input — joins or creates a list by 8-char ID
+     - Apply box — paste a snapshot to "become this user" or import movies
+   ============================================================================ */
+
+function openShelfManageModal () {
+  shelfManageOpen = true;
+  /* RDY snapshot — modal acts on whatever was RDY at the moment it opened. */
+  shelfReadySnap = {};
+  shelfData.lists.forEach(l => { shelfReadySnap[l.id] = l.ready; });
+
+  const modal = document.getElementById('copy-paste-modal');
+  modal.innerHTML = renderManageModalHtml();
+  modal.style.display = 'block';
+
+  const content = modal.querySelector('.modal-content');
+  applyViewportLayout(content);
+  if (window._manageUnbindWidth) window._manageUnbindWidth();
+  window._manageUnbindWidth = bindViewportWidthTracking(content);
+
+  /* close handlers */
+  modal.querySelector('.modal-close').addEventListener('click', closeShelfManageModal);
+  modal.onclick = (e) => { if (e.target === modal) closeShelfManageModal(); };
+
+  modal.querySelector('#manage-dest-toggle')
+    .addEventListener('click', toggleAllDestChecks);
+
+  modal.querySelectorAll('.manage-dest-cb').forEach(cb => {
+    cb.addEventListener('change', refreshDestToggleLabel);
+  });
+
+  modal.querySelector('#manage-copy-btn').addEventListener('click', shelfManageCopy);
+  modal.querySelector('#manage-remove-btn').addEventListener('click', shelfManageRemove);
+
+  const addBtn = modal.querySelector('#manage-add-list-btn');
+  if (addBtn) addBtn.addEventListener('click', shelfManageAddList);
+
+  const applyBtn = modal.querySelector('#manage-apply-btn');
+  if (applyBtn) applyBtn.addEventListener('click', shelfManageApplyPaste);
+
+  refreshDestToggleLabel();
+}
+
+function closeShelfManageModal () {
+  shelfManageOpen = false;
+  shelfReadySnap = null;
+  const modal = document.getElementById('copy-paste-modal');
+  if (window._manageUnbindWidth) { window._manageUnbindWidth(); window._manageUnbindWidth = null; }
+  modal.style.display = 'none';
+  modal.innerHTML = '';
+}
+
+function renderManageModalHtml () {
+  const v = shelfData.visitor;
+  const blob = buildShelfBlob();
+
+  /* Dest-list options: every list this visitor is on. (Solo list lands in
+     step 8.) Default UNCHECKED — user explicitly picks where to send. */
+  const destsHtml = shelfData.lists.map(l => {
+    const label = l.list_name && l.list_name.trim() ? l.list_name : l.id;
+    return '<label class="manage-dest-row">'
+      + '<input type="checkbox" class="manage-dest-cb" '
+        + 'data-list-id="' + escapeHtml(l.id) + '">'
+      + '<span class="manage-dest-label">' + escapeHtml(label)
+        + ' <span class="manage-dest-id">(' + escapeHtml(l.id) + ')</span></span>'
+      + '</label>';
+  }).join('');
+
+  return ''
+    + '<div class="modal-content shelf-manage-modal">'
+    +   '<button class="modal-close" aria-label="Close">✕</button>'
+    +   '<h2 class="manage-title">Manage</h2>'
+
+    +   '<div class="manage-section">'
+    +     '<label class="manage-label">Snapshot (read-only — paste below to apply)</label>'
+    +     '<textarea id="manage-blob" readonly>' + escapeHtml(blob) + '</textarea>'
+    +   '</div>'
+
+    +   '<div class="manage-section">'
+    +     '<div class="manage-section-header">'
+    +       '<span class="manage-label">Lists to act on</span>'
+    +       '<button id="manage-dest-toggle" class="manage-mini-btn">ALL</button>'
+    +     '</div>'
+    +     '<div id="manage-dest-list">' + destsHtml + '</div>'
+    +     '<div class="manage-add-row">'
+    +       '<input type="text" id="manage-add-input" placeholder="8-char list ID" '
+    +         'maxlength="8" autocomplete="off">'
+    +       '<button id="manage-add-list-btn" class="manage-mini-btn">+ Add / Create</button>'
+    +     '</div>'
+    +   '</div>'
+
+    +   '<div class="manage-section manage-actions">'
+    +     '<button id="manage-copy-btn">Copy selected → checked lists</button>'
+    +     '<button id="manage-remove-btn">Remove selected from checked lists</button>'
+    +   '</div>'
+
+    +   '<div class="manage-section">'
+    +     '<label class="manage-label">Apply a snapshot or visitor ID</label>'
+    +     '<textarea id="manage-apply-input" placeholder="Paste a snapshot or 10-char visitor ID"></textarea>'
+    +     '<button id="manage-apply-btn" class="manage-mini-btn">Apply</button>'
+    +     '<div class="manage-hint">Pasting a different visitor ID becomes that user (replaces the old Info paste flow).</div>'
+    +   '</div>'
+
+    + '</div>';
+}
+
+function buildShelfBlob () {
+  const lines = [];
+  const v = shelfData.visitor;
+  lines.push('# My Shelf snapshot');
+  lines.push('Your ID:    ' + v.id + (v.name ? ' (' + v.name + ')' : ''));
+  lines.push('Snapshot:   ' + new Date().toISOString().split('T')[0]);
+  lines.push('Active tab: ' + (activeTab === 'me' ? '(your tab)' : activeTab));
+  lines.push('');
+
+  /* Lists section — show all joined lists; mark RDY snapshot */
+  lines.push('## Lists');
+  shelfData.lists.forEach(l => {
+    const label = l.list_name && l.list_name.trim() ? l.list_name : '(no nickname)';
+    const rdy = shelfReadySnap[l.id] ? 'RDY' : 'NAW';
+    lines.push('- ' + l.id + '  ' + label + '  [' + rdy + ']');
+  });
+  lines.push('');
+
+  /* Selected movies — match selection at the time of open */
+  lines.push('## Selected movies');
+  const visible = shelfVisibleKeys();
+  visible.forEach(k => {
+    if (!shelfSelected.has(k)) return;
+    /* find the movie + (if list-tab) the list_entry for this key */
+    let movie = null, listEntry = null;
+    if (k.startsWith('m:')) {
+      const movieId = parseInt(k.slice(2));
+      shelfData.movies.forEach(m => {
+        const e = m.list_entries.find(le => le.movie_id === movieId);
+        if (e) { movie = m; listEntry = e; }
+      });
+    } else {
+      const [tid, mtype] = k.split(':');
+      movie = shelfData.movies.find(m =>
+        String(m.tmdb_id) === tid && m.media_type === mtype);
+    }
+    if (!movie) return;
+    lines.push('### ' + movie.master_rank + '. ' + movie.title
+      + (movie.year ? ' (' + movie.year + ')' : ''));
+    lines.push('- tmdb:    ' + movie.tmdb_id);
+    lines.push('- media:   ' + movie.media_type);
+    if (listEntry) {
+      lines.push('- on list: ' + listEntry.list_id
+        + (listEntry.added_here ? ' (you added)' : ''));
+    } else {
+      const onLists = movie.list_entries.map(le => le.list_id).join(', ');
+      if (onLists) lines.push('- on lists: ' + onLists);
+    }
+    lines.push('');
+  });
+
+  return lines.join('\n');
+}
+
+function toggleAllDestChecks () {
+  const cbs = Array.from(document.querySelectorAll('.manage-dest-cb'));
+  if (cbs.length === 0) return;
+  const allChecked = cbs.every(cb => cb.checked);
+  cbs.forEach(cb => { cb.checked = !allChecked; });
+  refreshDestToggleLabel();
+}
+
+function refreshDestToggleLabel () {
+  const cbs = Array.from(document.querySelectorAll('.manage-dest-cb'));
+  const btn = document.getElementById('manage-dest-toggle');
+  if (!btn) return;
+  const allChecked = cbs.length > 0 && cbs.every(cb => cb.checked);
+  btn.textContent = allChecked ? 'NONE' : 'ALL';
+}
+
+function getSelectedDestListIds () {
+  return Array.from(document.querySelectorAll('.manage-dest-cb'))
+    .filter(cb => cb.checked)
+    .map(cb => cb.dataset.listId);
+}
+
+/* Build the {tmdb_id, media_type, ...} item array for currently selected
+   shelf entries. Each shelfSelected key resolves to one movie object in
+   shelfData.movies. Used by both Copy and Remove. */
+function getSelectedShelfMovies () {
+  const out = [];
+  const seen = new Set();
+  shelfSelected.forEach(k => {
+    let movie = null;
+    if (k.startsWith('m:')) {
+      const movieId = parseInt(k.slice(2));
+      shelfData.movies.forEach(m => {
+        if (m.list_entries.some(le => le.movie_id === movieId)) movie = m;
+      });
+    } else {
+      const [tid, mtype] = k.split(':');
+      movie = shelfData.movies.find(m =>
+        String(m.tmdb_id) === tid && m.media_type === mtype);
+    }
+    if (movie) {
+      const dedupe = movie.tmdb_id + ':' + movie.media_type;
+      if (!seen.has(dedupe)) {
+        seen.add(dedupe);
+        out.push(movie);
+      }
+    }
+  });
+  return out;
+}
+
+async function shelfManageCopy () {
+  const dests = getSelectedDestListIds();
+  if (dests.length === 0) { alert('Pick at least one destination list.'); return; }
+
+  const movies = getSelectedShelfMovies();
+  if (movies.length === 0) { alert('No movies selected.'); return; }
+
+  const items = movies.map(m => ({
+    tmdb_id: m.tmdb_id,
+    media_type: m.media_type,
+    title: m.title,
+    year: m.year,
+    poster: m.poster
+  }));
+  const resp = await fetch(API + '/visitor/' + visitorId + '/copy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items, dest_list_ids: dests })
+  });
+  const data = await resp.json();
+  alert('Copied ' + (data.copied || 0) + ' movie/list pair(s); '
+    + (data.skipped ? data.skipped.length : 0) + ' skipped (already on list).');
+  closeShelfManageModal();
+  await loadShelf();
+}
+
+async function shelfManageRemove () {
+  const dests = getSelectedDestListIds();
+  if (dests.length === 0) { alert('Pick at least one list to remove from.'); return; }
+
+  const movies = getSelectedShelfMovies();
+  if (movies.length === 0) { alert('No movies selected.'); return; }
+
+  /* Build the (movie, list, movie_id) work items. Per spec we only remove
+     movies the visitor was the adder of; show others with strikethrough. */
+  const work = [];                                                  // eligible removes
+  const skipped = [];                                               // others
+  movies.forEach(m => {
+    dests.forEach(lid => {
+      const e = m.list_entries.find(le => le.list_id === lid);
+      if (!e) return;                                               // not on this list
+      if (e.added_here) work.push({ movie: m, list_id: lid, movie_id: e.movie_id });
+      else skipped.push({ movie: m, list_id: lid });
+    });
+  });
+
+  if (work.length === 0) {
+    alert('Nothing to remove (you can only remove movies you added).');
+    return;
+  }
+
+  const lines = [];
+  lines.push('Remove these?');
+  work.forEach(w => lines.push('  ✕ ' + w.movie.title + '  →  ' + w.list_id));
+  if (skipped.length) {
+    lines.push('');
+    lines.push('Skipped (added by someone else):');
+    skipped.forEach(s => lines.push('  – ' + s.movie.title + '  on  ' + s.list_id));
+  }
+  if (!confirm(lines.join('\n'))) return;
+
+  for (const w of work) {
+    await fetch(API + '/list/' + w.list_id + '/movies/' + w.movie_id, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visitor_id: visitorId })
+    });
+  }
+  closeShelfManageModal();
+  await loadShelf();
+}
+
+async function shelfManageAddList () {
+  const input = document.getElementById('manage-add-input');
+  const id = (input.value || '').trim();
+  if (!/^[A-Za-z0-9]{1,12}$/.test(id)) { alert('Enter a 1-12 char list ID.'); return; }
+  /* Joining (or creating) the list — uses the existing /join endpoint. */
+  await fetch(API + '/list/' + id + '/join', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: visitorId })
+  });
+  closeShelfManageModal();
+  await loadShelf();
+}
+
+async function shelfManageApplyPaste () {
+  const ta = document.getElementById('manage-apply-input');
+  const text = (ta.value || '').trim();
+  if (!text) return;
+
+  /* a 10-char alphanumeric on its own = a visitor ID — become this user */
+  if (/^[A-Za-z0-9]{10}$/.test(text)) {
+    visitorId = text;
+    setCookie('wtw_visitor', visitorId);
+    window.location.reload();
+    return;
+  }
+
+  /* otherwise treat as a snapshot blob — extract Your_ID line and become */
+  const parsed = parseBlob(text);
+  if (parsed && parsed.visitor_id && /^[A-Za-z0-9]{10}$/.test(parsed.visitor_id)) {
+    visitorId = parsed.visitor_id;
+    setCookie('wtw_visitor', visitorId);
+    window.location.reload();
+    return;
+  }
+  alert("Couldn't find a visitor ID to apply. Paste a 10-char ID or a snapshot with a 'Your ID:' line.");
+}
+
+/* ----------------------------------------------------------------------------
+   User-tab X-to-remove popup. Browser-native confirm wrapped in a synthetic
+   overlay so we can show the full list of lists with RDY-default checkboxes.
+   ---------------------------------------------------------------------------- */
+function openShelfMultiRemove (tmdb_id, media_type) {
+  const movie = shelfData.movies.find(m =>
+    m.tmdb_id === tmdb_id && m.media_type === media_type);
+  if (!movie) return;
+  /* lists where this user is the adder AND that exist on this movie's entries */
+  const removable = movie.list_entries.filter(le => le.added_here);
+  if (removable.length === 0) {
+    alert('You did not add this movie on any list, so you can\'t remove it.');
+    return;
+  }
+
+  /* Build a small inline confirm dialog. Reuse #copy-paste-modal as the
+     overlay since it's already a fullscreen-style modal slot. */
+  const modal = document.getElementById('copy-paste-modal');
+  const rows = removable.map(le => {
+    const lst = shelfData.lists.find(l => l.id === le.list_id);
+    const isRdy = lst ? lst.ready : false;
+    const label = (lst && lst.list_name && lst.list_name.trim())
+      ? lst.list_name + ' (' + le.list_id + ')'
+      : le.list_id;
+    return '<label class="multi-x-row">'
+      + '<input type="checkbox" class="multi-x-cb" '
+        + 'data-list-id="' + escapeHtml(le.list_id) + '" '
+        + 'data-movie-id="' + le.movie_id + '"'
+        + (isRdy ? ' checked' : '') + '>'
+      + '<span>' + escapeHtml(label) + (isRdy ? ' <em>RDY</em>' : '') + '</span>'
+      + '</label>';
+  }).join('');
+
+  modal.innerHTML =
+      '<div class="modal-content shelf-manage-modal">'
+    +   '<button class="modal-close" aria-label="Close">✕</button>'
+    +   '<h3 class="manage-title">Remove "' + escapeHtml(movie.title) + '"</h3>'
+    +   '<p class="manage-hint">RDY lists are pre-selected. Confirm to remove from each checked list.</p>'
+    +   '<div class="multi-x-list">' + rows + '</div>'
+    +   '<div class="manage-actions">'
+    +     '<button id="multi-x-confirm">Remove from checked lists</button>'
+    +     '<button id="multi-x-cancel" class="manage-mini-btn">Cancel</button>'
+    +   '</div>'
+    + '</div>';
+  modal.style.display = 'block';
+  const content = modal.querySelector('.modal-content');
+  applyViewportLayout(content);
+
+  modal.querySelector('.modal-close').addEventListener('click', () => {
+    modal.style.display = 'none'; modal.innerHTML = '';
+  });
+  modal.querySelector('#multi-x-cancel').addEventListener('click', () => {
+    modal.style.display = 'none'; modal.innerHTML = '';
+  });
+  modal.querySelector('#multi-x-confirm').addEventListener('click', async () => {
+    const picks = Array.from(modal.querySelectorAll('.multi-x-cb'))
+      .filter(cb => cb.checked)
+      .map(cb => ({ list_id: cb.dataset.listId, movie_id: parseInt(cb.dataset.movieId) }));
+    modal.style.display = 'none'; modal.innerHTML = '';
+    for (const p of picks) {
+      await fetch(API + '/list/' + p.list_id + '/movies/' + p.movie_id, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visitor_id: visitorId })
+      });
+    }
+    await loadShelf();
   });
 }
 

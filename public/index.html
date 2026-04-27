@@ -39,7 +39,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>What Do You Wanna Watch?</title>
-  <link rel="stylesheet" href="style.css?v=myshelfv2">
+  <link rel="stylesheet" href="style.css?v=myshelfv3">
 </head>
 <body>
 
@@ -84,6 +84,8 @@
           <div id="welcome-msg" style="display:none">Welcome! Enter a name to add or rank movies.</div>
           <span id="my-color-dot" title="Pick your color" style="display:none"></span>
           <div class="action-btn" data-action="info">INFO</div>
+          <div class="action-btn shelf-only" data-action="select-all" style="display:none">ALL</div>
+          <div class="action-btn shelf-only" data-action="manage" style="display:none">Manage</div>
           <div class="action-btn" data-action="howto">Help</div>
         </div>
         <div id="search-results"></div>
@@ -151,7 +153,7 @@
        the URL, checks the cookie, fetches data, and renders everything.
        ================================================================== -->
 
-  <script src="app.js?v=myshelfv2"></script>
+  <script src="app.js?v=myshelfv3"></script>
 
 </body>
 </html>

@@ -683,6 +683,147 @@ app.put('/api/visitor/:id/shelf-ranks', (req, res) => {
 });
 
 
+/* POST /api/visitor/:id/copy — bulk-copy movies to multiple destination lists.
+
+   Body: {
+     items: [ { tmdb_id, media_type, title, year, poster }, ... ],
+     dest_list_ids: [ "...", ... ]
+   }
+
+   For each (item, dest_list_id) pair:
+     - skip if the item is already on dest_list (duplicate by tmdb_id+media_type)
+     - auto-join the visitor to dest_list if they aren't already on it
+     - insert a movie row on dest_list with added_by = visitor_id
+     - for every visitor on dest_list, ensure user_movies entry. The
+       MASTER_RANK STAYS PUT — unlike POST /movies, copy does NOT bump the
+       adder's master_rank to 1 (per Doug's spec: "they maintain your rank
+       like they would from your main user tab")
+     - re-project all affected visitors' lists at the end
+
+   Returns { copied: N, skipped: [{tmdb_id, media_type, list_id, reason}] }. */
+app.post('/api/visitor/:id/copy', (req, res) => {
+  const vid = req.params.id;
+  const { items, dest_list_ids } = req.body;
+
+  if (!Array.isArray(items) || !Array.isArray(dest_list_ids)) {
+    return res.status(400).json({ error: 'items and dest_list_ids required' });
+  }
+  const visitor = db.prepare('SELECT id FROM visitors WHERE id = ?').get(vid);
+  if (!visitor) return res.status(404).json({ error: 'visitor not found' });
+
+  /* validate every item — same rules as POST /movies */
+  for (const item of items) {
+    if (!item || typeof item !== 'object') return res.status(400).json({ error: 'invalid item' });
+    if (!Number.isInteger(item.tmdb_id) || item.tmdb_id <= 0) {
+      return res.status(400).json({ error: 'invalid tmdb_id' });
+    }
+    if (item.media_type !== 'movie' && item.media_type !== 'tv') {
+      return res.status(400).json({ error: 'invalid media_type' });
+    }
+    if (item.poster != null && item.poster !== ''
+        && !(typeof item.poster === 'string' && /^\/[A-Za-z0-9_.-]+$/.test(item.poster))) {
+      return res.status(400).json({ error: 'invalid poster' });
+    }
+    if (item.year != null && item.year !== '' && item.year !== '?') {
+      const yn = Number(item.year);
+      if (!Number.isInteger(yn) || yn < 1800 || yn > 2100) {
+        return res.status(400).json({ error: 'invalid year' });
+      }
+    }
+  }
+
+  const skipped = [];
+  let copied = 0;
+
+  const tx = db.transaction(() => {
+    const affectedListIds = new Set();
+    const affectedVisitorIds = new Set();
+
+    for (const dest of dest_list_ids) {
+      /* create dest list if it doesn't exist */
+      const lst = db.prepare('SELECT id FROM lists WHERE id = ?').get(dest);
+      if (!lst) {
+        db.prepare('INSERT INTO lists (id, created) VALUES (?, ?)')
+          .run(dest, new Date().toISOString().split('T')[0]);
+      }
+
+      /* auto-join visitor if needed */
+      let slot = db.prepare(
+        'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+      ).get(dest, vid);
+      if (!slot) {
+        const taken = db.prepare(
+          'SELECT slot FROM list_visitors WHERE list_id = ? ORDER BY slot'
+        ).all(dest).map(r => r.slot);
+        let next = null;
+        for (let s = 1; s <= 10; s++) { if (!taken.includes(s)) { next = s; break; } }
+        if (!next) {
+          for (const item of items) {
+            skipped.push({ tmdb_id: item.tmdb_id, media_type: item.media_type,
+              list_id: dest, reason: 'list full' });
+          }
+          continue;
+        }
+        db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
+          .run(dest, next, vid);
+        slot = { slot: next };
+        /* seed master_rank entries for movies already on the dest list */
+        const existingMovies = db.prepare(
+          'SELECT tmdb_id, media_type FROM movies WHERE list_id = ? ORDER BY id'
+        ).all(dest);
+        existingMovies.forEach(m => {
+          ensureUserMovieKeepOrAppend(vid, m.tmdb_id, m.media_type);
+        });
+      }
+      affectedListIds.add(dest);
+
+      for (const item of items) {
+        const validYear =
+          item.year == null || item.year === '' ? null
+          : item.year === '?' ? '?' : Number(item.year);
+        const validPoster =
+          item.poster == null || item.poster === '' ? null : item.poster;
+
+        const exists = db.prepare(
+          'SELECT id FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
+        ).get(dest, item.tmdb_id, item.media_type);
+        if (exists) {
+          skipped.push({ tmdb_id: item.tmdb_id, media_type: item.media_type,
+            list_id: dest, reason: 'already on list' });
+          continue;
+        }
+
+        db.prepare(
+          'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by) '
+          + 'VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).run(dest, item.tmdb_id, item.media_type, item.title || '',
+              validYear, validPoster, vid);
+
+        /* every slot on this list needs a master_rank entry — KEEP existing
+           (this is the difference from POST /movies); append at end if absent */
+        const slots = db.prepare(
+          'SELECT slot, visitor_id FROM list_visitors WHERE list_id = ?'
+        ).all(dest);
+        slots.forEach(s => {
+          ensureUserMovieKeepOrAppend(s.visitor_id, item.tmdb_id, item.media_type);
+          affectedVisitorIds.add(s.visitor_id);
+        });
+
+        copied++;
+      }
+    }
+
+    /* re-project every affected visitor's full list set */
+    affectedVisitorIds.forEach(v => reprojectAllListsForVisitor(v));
+    /* and any visitors who were already on a dest list but not adders */
+    affectedListIds.forEach(lid => reprojectListForAllVisitors(lid));
+  });
+  tx();
+
+  res.json({ copied, skipped });
+});
+
+
 /* DELETE /api/visitor/:id — only succeeds if the visitor is "untouched":
    no name set AND no slot in any list. Used by the Details paste flow when
    a brand-new visitor adopts an existing ID and we want to recycle the

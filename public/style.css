@@ -1246,3 +1246,143 @@ html, body {
 .tab-shelf-list.tab-dimmed {
   opacity: 0.55;                       /* NAW state — still legible */
 }
+
+/* Step 6 — checkbox column on shelf entries (replaces .shelf-checkbox-cell
+   placeholder). Centered checkbox in the cell, generous touch target. */
+.shelf-checkbox-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.shelf-cb {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+/* Manage modal (step 6) — single-column layout, mobile-friendly. */
+.shelf-manage-modal {
+  width: 92vw;
+  max-width: 600px;
+  left: 4vw;
+  top: 4vh;
+  max-height: 92vh;
+  overflow-y: auto;
+}
+.manage-title {
+  font-size: 18px;
+  margin: 0 0 12px 0;
+  color: #1a1a1a;
+}
+.manage-section {
+  margin-bottom: 16px;
+}
+.manage-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.manage-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  display: block;
+  margin-bottom: 4px;
+}
+#manage-blob,
+#manage-apply-input {
+  width: 100%;
+  min-height: 120px;
+  padding: 8px 10px;
+  font-size: 12px;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  background: #fafafa;
+  color: #222;
+  resize: vertical;
+}
+#manage-blob {
+  background: #f3f3f3;
+}
+.manage-dest-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.manage-dest-cb {
+  width: 16px;
+  height: 16px;
+}
+.manage-dest-id {
+  color: #888;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.manage-add-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.manage-add-row input {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+.manage-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.manage-actions button {
+  padding: 10px 14px;
+  background: #e94560;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.manage-actions button:hover { background: #d2334d; }
+.manage-mini-btn {
+  padding: 4px 10px;
+  background: #1a1a1a;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.manage-hint {
+  font-size: 11px;
+  color: #777;
+  margin-top: 4px;
+}
+
+/* Multi-list X confirm popup */
+.multi-x-list {
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.multi-x-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 4px 2px;
+}
+.multi-x-row em {
+  font-size: 10px;
+  font-weight: 600;
+  color: #2a8a4a;
+  font-style: normal;
+}

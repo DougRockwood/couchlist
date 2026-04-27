@@ -384,6 +384,31 @@ function reprojectAllListsForVisitor (visitor_id) {
   memberships.forEach(m => reprojectListForVisitor(visitor_id, m.list_id, m.slot));
 }
 
+/* Permute master_rank values among ONLY the keys passed in. Used by the
+   My Shelf page when the visitor reorders their movies on the "your" tab —
+   movies they didn't add (or that aren't in the filtered visible list) keep
+   their master_rank untouched. Errors out if any key is missing from
+   user_movies for this visitor (caller should never pass orphaned keys). */
+function setMasterProjectionByKeys (visitor_id, ordered_keys) {
+  const slots = [];
+  for (const k of ordered_keys) {
+    const r = db.prepare(
+      'SELECT master_rank FROM user_movies '
+      + 'WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?'
+    ).get(visitor_id, k.tmdb_id, k.media_type);
+    if (!r) throw new Error('key not in master: ' + k.tmdb_id + ':' + k.media_type);
+    slots.push(r.master_rank);
+  }
+  const sortedSlots = slots.slice().sort((a, b) => a - b);
+
+  const stmt = db.prepare(
+    'UPDATE user_movies SET master_rank = ? '
+    + 'WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?'
+  );
+  ordered_keys.forEach((k, i) => stmt.run(-(i + 1), visitor_id, k.tmdb_id, k.media_type));
+  ordered_keys.forEach((k, i) => stmt.run(sortedSlots[i], visitor_id, k.tmdb_id, k.media_type));
+}
+
 /* Apply a desired list ordering for one visitor by permuting which master_rank
    slot each of this list's movies occupies. Master_ranks of movies NOT on
    this list (and NULL-tmdb movies) are untouched.
@@ -586,6 +611,55 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
   }));
 
   res.json({ visitor, lists, movies });
+});
+
+
+/* PUT /api/visitor/:id/shelf-ranks — reorder master_rank among a subset of
+   the visitor's movies (used by the My Shelf "your" tab drag).
+
+   Body: { ordered_keys: [ { tmdb_id, media_type }, ... ] }
+
+   Master_rank values for movies NOT in ordered_keys are untouched. The
+   ordered_keys list MUST contain only keys this visitor has in user_movies;
+   sending unknown keys returns 400 (we don't silently create entries here,
+   to avoid a malformed client payload corrupting the master order).
+   Re-projects all of this visitor's lists on success. */
+app.put('/api/visitor/:id/shelf-ranks', (req, res) => {
+  const vid = req.params.id;
+  const { ordered_keys } = req.body;
+
+  if (!Array.isArray(ordered_keys)) {
+    return res.status(400).json({ error: 'ordered_keys must be an array' });
+  }
+
+  /* validate every key — same shape rules as the rest of the app */
+  for (const k of ordered_keys) {
+    if (!k || typeof k !== 'object') return res.status(400).json({ error: 'invalid key' });
+    if (!Number.isInteger(k.tmdb_id) || k.tmdb_id <= 0) {
+      return res.status(400).json({ error: 'invalid tmdb_id in key' });
+    }
+    if (k.media_type !== 'movie' && k.media_type !== 'tv') {
+      return res.status(400).json({ error: 'invalid media_type in key' });
+    }
+  }
+
+  const visitor = db.prepare('SELECT id FROM visitors WHERE id = ?').get(vid);
+  if (!visitor) return res.status(404).json({ error: 'visitor not found' });
+
+  try {
+    const tx = db.transaction(() => {
+      setMasterProjectionByKeys(vid, ordered_keys);
+      reprojectAllListsForVisitor(vid);
+    });
+    tx();
+  } catch (e) {
+    if (/^key not in master/.test(e.message)) {
+      return res.status(400).json({ error: e.message });
+    }
+    throw e;
+  }
+
+  res.json({ ok: true });
 });
 
 

@@ -1210,3 +1210,21 @@ html, body {
   color: #555;
   margin-bottom: 6px;
 }
+
+
+/* ============================================================================
+   MY SHELF (step 4) — minimal additions; shelf entries reuse the .entry grid
+   ============================================================================ */
+
+.shelf-empty {
+  grid-column: 1 / -1;                /* span every grid column in #movie-list */
+  padding: 24px 12px;
+  color: #666;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.shelf-checkbox-cell {
+  /* placeholder cell where comments live in list mode; populated in step 6 */
+}

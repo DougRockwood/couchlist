@@ -57,10 +57,12 @@ const DEBOUNCE_MS   = 300;
    displayNames     — { visitorId: "Doug" or "Doug(2)" } — per-list display names
    ============================================================================ */
 
+let appMode           = 'list';                                    // 'list' (Couchlist) or 'shelf' (My Shelf)
 let listId            = null;
 let visitorId         = null;
 let visitor           = null;
 let listData          = null;
+let shelfData         = null;                                      // { visitor, lists, movies } from /shelf
 let mySlot            = null;                                      // NEW: my slot (1-10) on this list
 let activeTab         = 'couch';
 let selectedVisitors  = {};
@@ -83,25 +85,27 @@ let displayNames      = {};
 function initApp() {
   const urlPath = window.location.pathname.replace(/^\//, '');
 
-  if (!urlPath || urlPath === '') {
-    listId = generateId(LIST_ID_LEN);
-    window.location.href = '/' + listId;
-    return;
-  }
-
-  listId = urlPath;
-
   visitorId = getCookie('wtw_visitor');
   if (!visitorId) {
     visitorId = generateId(VISITOR_ID_LEN);
     setCookie('wtw_visitor', visitorId);
   }
 
+  /* Bare `/` lands on My Shelf; `/<8charid>` is the existing Couchlist view. */
+  if (!urlPath || urlPath === '') {
+    appMode = 'shelf';
+    initShelf();
+    return;
+  }
+
+  appMode = 'list';
+  listId = urlPath;
+
   loadVisitorProfile().then(() => {
     return loadList();
   }).then(() => {
     setupEventListeners();
-    console.log('app.js BUILD details-paste');
+    console.log('app.js BUILD myshelf-step4');
     document.title = 'CouchList';
 
     /* pendingPaste hook: if a previous Apply redirected us here (either for
@@ -743,7 +747,9 @@ let dragState = null;     /* { movieId, originalEntry, handle, pointerId,
 
 function onGrabPointerDown(e) {
   if (e.button !== undefined && e.button !== 0) return;           // left click / primary touch only
-  if (!mySlot) return;
+  /* In list mode you must have a slot before reordering; in shelf mode anyone
+     with master_rank entries (i.e. any visitor with movies) can reorder. */
+  if (appMode === 'list' && !mySlot) return;
 
   const handle = e.target.closest('.grab-handle');
   if (!handle) return;
@@ -755,9 +761,14 @@ function onGrabPointerDown(e) {
 
   /* snapshot the on-screen order AT drag start. Every drop target index is
      relative to this list, not a live query — so sorting/reflow during the
-     drag can't desync us. */
+     drag can't desync us. List mode commits movie-row IDs; shelf mode commits
+     (tmdb_id, media_type) keys, so we capture both. */
   const entries = Array.from(document.querySelectorAll('#movie-list .entry'));
   const orderedMovieIds = entries.map(el => parseInt(el.dataset.movieId));
+  const orderedShelfKeys = entries.map(el => ({
+    tmdb_id: parseInt(el.dataset.tmdbId),
+    media_type: el.dataset.mediaType
+  }));
   const startIndex = entries.indexOf(entry);
 
   /* No clone. The row itself is the floater. Track the pointer in PAGE
@@ -785,6 +796,7 @@ function onGrabPointerDown(e) {
     pointerId: e.pointerId,
     startPointerPageY: startPointerPageY,                          // page-coord pointer Y at drag start
     orderedMovieIds: orderedMovieIds,
+    orderedShelfKeys: orderedShelfKeys,
     startIndex: startIndex,
     currentIndex: startIndex,
     pointerY: e.clientY,
@@ -830,6 +842,9 @@ function onDragPointerUp(e) {
   const targetIndex = dragState.currentIndex;
   const startIndex = dragState.startIndex;
   const orderedMovieIds = dragState.orderedMovieIds.slice();
+  const orderedShelfKeys = dragState.orderedShelfKeys
+    ? dragState.orderedShelfKeys.slice()
+    : null;
 
   /* tear down drag UI first, regardless of whether anything changed */
   stopAutoScroll();
@@ -849,11 +864,20 @@ function onDragPointerUp(e) {
 
   if (targetIndex === startIndex) return;                         // dropped in place, no-op
 
-  /* build the new order: pull the dragged id, reinsert at target */
-  const [dragged] = orderedMovieIds.splice(startIndex, 1);
-  orderedMovieIds.splice(targetIndex, 0, dragged);
+  /* build the new order: pull the dragged id (or key), reinsert at target.
+     We do both in parallel so list-mode and shelf-mode commits stay symmetric. */
+  const [draggedId] = orderedMovieIds.splice(startIndex, 1);
+  orderedMovieIds.splice(targetIndex, 0, draggedId);
+  if (orderedShelfKeys) {
+    const [draggedKey] = orderedShelfKeys.splice(startIndex, 1);
+    orderedShelfKeys.splice(targetIndex, 0, draggedKey);
+  }
 
-  commitReorder(orderedMovieIds);
+  if (appMode === 'shelf') {
+    commitShelfReorder(orderedShelfKeys);
+  } else {
+    commitReorder(orderedMovieIds);
+  }
 }
 
 /* Position the "To the top!" / "To the bottom!" bars flush with the
@@ -2240,7 +2264,211 @@ function openHowToModal() {
 
 
 /* ============================================================================
-   SECTION 16: STARTUP
+   SECTION 16: MY SHELF MODE  (added 2026-04-26 — step 4 of My Shelf rollout)
+   ============================================================================
+   The bare `/` URL routes here instead of generating a new list. Loads the
+   visitor's profile + shelf (master_rank list across all their lists) and
+   renders the "your" tab: every movie they've added across any list, in
+   master_rank order, with drag-to-reorder.
+
+   Step 4 is intentionally minimal. Deferred to later steps:
+     - Search-and-add (auto-creates a "solo list" entry)         step 8
+     - X-to-remove (multi-list confirm)                          step 5+
+     - ALL/NONE checkbox column (used by Manage modal)           step 6
+     - Per-list tabs alongside the user tab                      step 5
+     - RDY/NAW per list                                          step 5
+     - Manage modal (replaces the old Info/copy-paste flow)      step 6
+     - List nicknames + sub-tab on the Couchlist page            step 7
+     - First-time landing card (no name, no lists yet)           step 8
+
+   The drag scaffolding is shared with list mode; SECTION 8 reads `appMode`
+   to decide whether to commit by movie ID (list) or shelf key (this mode).
+   ============================================================================ */
+
+function initShelf () {
+  loadVisitorProfile().then(() => {
+    return loadShelf();
+  }).then(() => {
+    setupShelfEventListeners();
+    document.title = 'My Shelf';
+  });
+}
+
+async function loadShelf () {
+  if (!visitor) {
+    /* cookie exists but the server has no visitor row yet (no name set).
+       Render the basic "type your name" prompt — full landing card is step 8. */
+    shelfData = null;
+    renderShelfBare();
+    return;
+  }
+  const resp = await fetch(API + '/visitor/' + visitorId + '/shelf');
+  if (!resp.ok) {
+    shelfData = null;
+    renderShelfBare();
+    return;
+  }
+  shelfData = await resp.json();
+  renderShelf();
+}
+
+/* Bare shell when we don't have a named visitor yet. Shows just the
+   "type your name" tab and a help button. Once a name is entered we'll
+   PUT /visitor/:id and re-render. */
+function renderShelfBare () {
+  const tabBar = document.getElementById('tab-bar');
+  tabBar.innerHTML =
+    '<div class="tab tab-mine tab-new tab-active">'
+    + '<input id="name-input" class="tab-name-input" type="text" '
+    +   'placeholder="Type your name" autocomplete="off" maxlength="' + NAME_MAX_LEN + '">'
+    + '</div>';
+
+  const searchBox = document.getElementById('search-box');
+  const colorDot  = document.getElementById('my-color-dot');
+  const welcome   = document.getElementById('welcome-msg');
+  if (searchBox) searchBox.style.display = 'none';
+  if (colorDot)  colorDot.style.display = 'none';
+  if (welcome)   { welcome.style.display = 'block';
+                   welcome.textContent = 'Welcome — name yourself to start your shelf.'; }
+
+  const infoBtn = document.querySelector('.action-btn[data-action="info"]');
+  if (infoBtn) infoBtn.style.display = 'none';                   /* INFO is being replaced by Manage */
+
+  document.getElementById('movie-list').innerHTML = '';
+}
+
+function renderShelf () {
+  /* Tab bar — just the user tab for now. Step 5 adds list tabs alongside. */
+  const v = shelfData.visitor;
+  const tabBar = document.getElementById('tab-bar');
+  const colorAttr = v.color ? ('background:' + escapeHtml(v.color) + ';') : '';
+  tabBar.innerHTML =
+    '<div class="tab tab-user tab-mine tab-active" data-tab="me" style="' + colorAttr + '">'
+    +   '<span class="tab-name">' + escapeHtml(v.name || '') + '</span>'
+    + '</div>';
+
+  /* Search row: the search box and color-dot stay hidden for step 4 (search
+     is wired to auto-add to the solo list, which lands in step 8). The Help
+     button stays. The INFO button hides — Manage replaces it in step 6. */
+  const searchBox = document.getElementById('search-box');
+  const welcome   = document.getElementById('welcome-msg');
+  const colorDot  = document.getElementById('my-color-dot');
+  if (searchBox) searchBox.style.display = 'none';
+  if (welcome)   welcome.style.display = 'none';
+  if (colorDot)  colorDot.style.display = 'none';
+  const infoBtn = document.querySelector('.action-btn[data-action="info"]');
+  if (infoBtn) infoBtn.style.display = 'none';
+
+  /* Movie list — only movies this visitor added, sorted by master_rank.
+     A movie a user added on multiple lists shows once; list_ids is in the
+     dataset for later step 5 / 6 use. */
+  const ml = document.getElementById('movie-list');
+  const myMovies = shelfData.movies.filter(m => m.added_by_me);
+
+  if (myMovies.length === 0) {
+    ml.innerHTML = '<div class="shelf-empty">'
+      + 'No movies added yet. Visit a list and add something — it will show up here.'
+      + '</div>';
+    return;
+  }
+
+  ml.innerHTML = '';
+  myMovies.forEach((m, i) => {
+    ml.appendChild(renderShelfEntry(m, i + 1));
+  });
+}
+
+function renderShelfEntry (movie, position) {
+  const entry = document.createElement('div');
+  entry.className = 'entry shelf-entry';
+  entry.dataset.tmdbId    = movie.tmdb_id;
+  entry.dataset.mediaType = movie.media_type;
+  /* movieId stays empty in shelf mode — drag commit reads tmdb-id+media-type. */
+
+  const posterUrl = movie.poster ? TMDB_IMG + 'w92' + movie.poster : '';
+  const yearText  = (movie.year != null) ? movie.year : '';
+
+  entry.innerHTML =
+    '<div class="entry-rank">'
+      + '<span class="rank-number">' + position + '</span>'
+    + '</div>'
+    + '<div class="entry-grab">'
+      + '<div class="grab-handle" aria-label="Drag to reorder">'
+        + '<span class="grab-icon">&#9776;</span>'
+      + '</div>'
+    + '</div>'
+    + '<div class="entry-poster" data-tmdb-id="' + movie.tmdb_id
+      + '" data-media-type="' + escapeHtml(movie.media_type) + '">'
+      + (posterUrl ? '<img src="' + posterUrl + '">' : '<div class="no-poster">?</div>')
+    + '</div>'
+    + '<div class="entry-title" data-tmdb-id="' + movie.tmdb_id
+      + '" data-media-type="' + escapeHtml(movie.media_type) + '">'
+      + '<div class="entry-title-text">'
+        + escapeHtml(movie.title) + (yearText !== '' ? ' (' + yearText + ')' : '')
+      + '</div>'
+    + '</div>'
+    /* placeholders so the existing 6-col grid still aligns; populated in later steps */
+    + '<div class="entry-comments shelf-checkbox-cell"></div>'
+    + '<div class="entry-remove"></div>';
+  return entry;
+}
+
+async function commitShelfReorder (orderedKeys) {
+  await fetch(API + '/visitor/' + visitorId + '/shelf-ranks', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ordered_keys: orderedKeys })
+  });
+  await loadShelf();
+}
+
+function setupShelfEventListeners () {
+  /* Drag — same handler as list mode, branches on appMode internally. */
+  document.addEventListener('pointerdown', onGrabPointerDown);
+
+  /* Help button — reuses the existing modal (already covers the Couchlist
+     side; in step 5/7 we'll add a My Shelf-specific version). */
+  document.addEventListener('click', e => {
+    const helpBtn = e.target.closest('.action-btn[data-action="howto"]');
+    if (helpBtn) { openHowToModal(); return; }
+  });
+
+  /* Name entry on the bare shell. Once they save a name we re-render
+     (loadShelf will refetch — even an empty shelf is fine). */
+  document.addEventListener('keydown', async (e) => {
+    if (e.target && e.target.id === 'name-input' && e.key === 'Enter') {
+      const text = e.target.value.trim();
+      if (!text) return;
+      /* set the visitor's name and color globally, then re-load the shelf */
+      const color = randomColor();
+      const resp = await fetch(API + '/visitor/' + visitorId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: text, color })
+      });
+      visitor = await resp.json();
+      await loadShelf();
+    }
+  });
+
+  /* Movie popup on poster/title — reuse showMoviePopup. */
+  document.addEventListener('click', e => {
+    const target = e.target.closest('.entry-poster, .entry-title');
+    if (!target) return;
+    const tmdbId    = parseInt(target.dataset.tmdbId);
+    const mediaType = target.dataset.mediaType || 'movie';
+    if (tmdbId) showMoviePopup(tmdbId, mediaType);
+  });
+  document.addEventListener('click', e => {
+    if (e.target.closest('.entry-poster, .entry-title, .popup-content')) return;
+    const popup = document.getElementById('movie-popup');
+    if (popup && popup.style.display === 'block') hideMoviePopup();
+  });
+}
+
+
+/* ============================================================================
+   SECTION 17: STARTUP
    ============================================================================ */
 
 initApp();

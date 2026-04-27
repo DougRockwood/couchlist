@@ -244,6 +244,218 @@ try {
 
 
 /* ============================================================================
+   SECTION 2c: MASTER-RANK HELPERS  (added 2026-04-26 — step 2 of My Shelf rollout)
+   ============================================================================
+   user_movies is the source of truth for every visitor's ordering of every
+   movie they've encountered. The userN_rank columns on movies are now a
+   denormalized cache: for a given list, each visitor's userN_rank values are
+   the projection of their master_rank onto the movies on this list.
+
+   Reorder rule (drag/swap/move/my-ranks):
+     "Permute master_rank values among ONLY the movies on this list,
+      keeping the SET of master_rank slots unchanged."
+     Movies not on this list keep their master_rank intact; the relative
+     order of OTHER movies on the same list also stays put except where the
+     user explicitly moved something.
+     This is the algorithm that produces both of Doug's worked examples:
+       master [A,X,Y,B,C], list [A,B,C], drag→[A,C,B] => [A,X,Y,C,B]
+       master [B,A,X,Y,C], list [B,A,C], drag→[A,B,C] => [A,B,X,Y,C]
+
+   Add rule:
+     Adder: their new master_rank for the (tmdb_id,media_type) is 1; if they
+     already had it elsewhere, move it to 1 (everything else shifts down).
+     Others on the list: if they already had the key, leave master_rank
+     alone; otherwise append at end (max+1).
+
+   Remove rule:
+     Decrement nothing in master_rank if the key still exists on some other
+     list. If the deletion makes the key vanish from the entire DB, drop the
+     user_movies row for every visitor who had it and re-compact each
+     visitor's master_rank so it's contiguous 1..N again.
+
+   NULL tmdb_id movies (legacy Details paste flow) are not tracked in
+   user_movies. Their userN_rank values get a deterministic tail position
+   from the reproject helper, so they remain visible without breaking ranks.
+   ============================================================================ */
+
+function ensureUserMovieAtTop (visitor_id, tmdb_id, media_type) {
+  if (tmdb_id == null) return;
+  const existing = db.prepare(
+    'SELECT master_rank FROM user_movies WHERE visitor_id=? AND tmdb_id=? AND media_type=?'
+  ).get(visitor_id, tmdb_id, media_type);
+
+  if (existing) {
+    if (existing.master_rank === 1) return;                          // already at top
+    db.prepare(
+      'UPDATE user_movies SET master_rank = master_rank + 1 '
+      + 'WHERE visitor_id = ? AND master_rank < ?'
+    ).run(visitor_id, existing.master_rank);
+    db.prepare(
+      'UPDATE user_movies SET master_rank = 1 '
+      + 'WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?'
+    ).run(visitor_id, tmdb_id, media_type);
+  } else {
+    db.prepare(
+      'UPDATE user_movies SET master_rank = master_rank + 1 WHERE visitor_id = ?'
+    ).run(visitor_id);
+    db.prepare(
+      'INSERT INTO user_movies (visitor_id, tmdb_id, media_type, master_rank) VALUES (?, ?, ?, 1)'
+    ).run(visitor_id, tmdb_id, media_type);
+  }
+}
+
+function ensureUserMovieKeepOrAppend (visitor_id, tmdb_id, media_type) {
+  if (tmdb_id == null) return;
+  const existing = db.prepare(
+    'SELECT 1 FROM user_movies WHERE visitor_id=? AND tmdb_id=? AND media_type=?'
+  ).get(visitor_id, tmdb_id, media_type);
+  if (existing) return;
+
+  const maxRank = db.prepare(
+    'SELECT COALESCE(MAX(master_rank), 0) AS m FROM user_movies WHERE visitor_id = ?'
+  ).get(visitor_id).m;
+  db.prepare(
+    'INSERT INTO user_movies (visitor_id, tmdb_id, media_type, master_rank) VALUES (?, ?, ?, ?)'
+  ).run(visitor_id, tmdb_id, media_type, maxRank + 1);
+}
+
+/* If the (tmdb_id, media_type) is no longer present on ANY list, drop every
+   visitor's user_movies row for it and re-compact their master_ranks. Returns
+   true if the row was orphaned and cleaned up. */
+function cleanupOrphanedKey (tmdb_id, media_type) {
+  if (tmdb_id == null) return false;
+  const stillSomewhere = db.prepare(
+    'SELECT 1 FROM movies WHERE tmdb_id = ? AND media_type = ? LIMIT 1'
+  ).get(tmdb_id, media_type);
+  if (stillSomewhere) return false;
+
+  const affected = db.prepare(
+    'SELECT visitor_id, master_rank FROM user_movies WHERE tmdb_id = ? AND media_type = ?'
+  ).all(tmdb_id, media_type);
+
+  const del = db.prepare(
+    'DELETE FROM user_movies WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?'
+  );
+  const compact = db.prepare(
+    'UPDATE user_movies SET master_rank = master_rank - 1 '
+    + 'WHERE visitor_id = ? AND master_rank > ?'
+  );
+  affected.forEach(a => {
+    del.run(a.visitor_id, tmdb_id, media_type);
+    compact.run(a.visitor_id, a.master_rank);
+  });
+  return true;
+}
+
+/* Recompute the userN_rank cache column for one visitor on one list.
+   Movies on the list are sorted by master_rank ASC (NULL master_rank — i.e.
+   movies with no tmdb_id — sort to the end, then by movies.id for stability),
+   then assigned rank 1..N. Caller must have validated that visitor has a
+   slot on this list. */
+function reprojectListForVisitor (visitor_id, list_id, slot) {
+  const col = 'user' + slot + '_rank';
+  const ordered = db.prepare(
+    'SELECT m.id FROM movies m '
+    + 'LEFT JOIN user_movies um '
+    + '  ON um.visitor_id = ? AND um.tmdb_id = m.tmdb_id AND um.media_type = m.media_type '
+    + 'WHERE m.list_id = ? '
+    + 'ORDER BY (um.master_rank IS NULL), um.master_rank, m.id'
+  ).all(visitor_id, list_id);
+
+  const upd = db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?');
+  ordered.forEach((m, i) => upd.run(i + 1, m.id));
+}
+
+function reprojectListForAllVisitors (list_id) {
+  const slots = db.prepare(
+    'SELECT slot, visitor_id FROM list_visitors WHERE list_id = ?'
+  ).all(list_id);
+  slots.forEach(s => reprojectListForVisitor(s.visitor_id, list_id, s.slot));
+}
+
+/* Re-project every list this visitor is on. Called whenever the visitor's
+   master_rank values change, since other lists' projections of shared keys
+   depend on master_rank too. Cost is O(lists * movies-per-list); fine for
+   the scale this app operates at. */
+function reprojectAllListsForVisitor (visitor_id) {
+  const memberships = db.prepare(
+    'SELECT list_id, slot FROM list_visitors WHERE visitor_id = ?'
+  ).all(visitor_id);
+  memberships.forEach(m => reprojectListForVisitor(visitor_id, m.list_id, m.slot));
+}
+
+/* Apply a desired list ordering for one visitor by permuting which master_rank
+   slot each of this list's movies occupies. Master_ranks of movies NOT on
+   this list (and NULL-tmdb movies) are untouched.
+
+   `ordered_movie_ids` is a list of movies.id values in the desired list-order;
+   movies on the list but absent from this array get appended (preserving
+   their current relative master_rank order).  */
+function setListProjection (visitor_id, list_id, ordered_movie_ids) {
+  const allOnList = db.prepare(
+    'SELECT m.id, m.tmdb_id, m.media_type, um.master_rank '
+    + 'FROM movies m '
+    + 'LEFT JOIN user_movies um '
+    + '  ON um.visitor_id = ? AND um.tmdb_id = m.tmdb_id AND um.media_type = m.media_type '
+    + 'WHERE m.list_id = ?'
+  ).all(visitor_id, list_id);
+
+  /* skip movies with no tmdb_id (they can't be in user_movies) */
+  const trackable = allOnList.filter(m => m.tmdb_id != null);
+
+  /* full target order: requested ids first, then remaining trackable movies
+     ordered by their current master_rank (NULL last, then id) */
+  const requested = new Set(ordered_movie_ids);
+  const tail = trackable
+    .filter(m => !requested.has(m.id))
+    .sort((a, b) => {
+      if (a.master_rank == null && b.master_rank == null) return a.id - b.id;
+      if (a.master_rank == null) return 1;
+      if (b.master_rank == null) return -1;
+      return a.master_rank - b.master_rank;
+    });
+
+  const byId = new Map(allOnList.map(m => [m.id, m]));
+  const orderedKeys = [];
+  for (const id of ordered_movie_ids) {
+    const m = byId.get(id);
+    if (m && m.tmdb_id != null) orderedKeys.push(m);
+  }
+  const finalOrder = orderedKeys.concat(tail);                       // movie objects in target list-order
+
+  /* the SET of master_rank slots occupied by these movies stays the same;
+     we just reassign which key gets which slot. NULL master_rank means the
+     visitor doesn't yet have a user_movies entry for that key — give it one
+     by appending at the end first. */
+  finalOrder.forEach(m => {
+    if (m.master_rank == null) {
+      ensureUserMovieKeepOrAppend(visitor_id, m.tmdb_id, m.media_type);
+      m.master_rank = db.prepare(
+        'SELECT master_rank FROM user_movies WHERE visitor_id=? AND tmdb_id=? AND media_type=?'
+      ).get(visitor_id, m.tmdb_id, m.media_type).master_rank;
+    }
+  });
+
+  const slotValues = finalOrder
+    .map(m => m.master_rank)
+    .sort((a, b) => a - b);                                          // ascending master_rank slots
+
+  /* assign keys to slots in order. Two-phase to avoid collisions: first
+     stamp each key with a sentinel negative rank, then write the real one. */
+  const stampNeg = db.prepare(
+    'UPDATE user_movies SET master_rank = ? '
+    + 'WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?'
+  );
+  finalOrder.forEach((m, i) => {
+    stampNeg.run(-(i + 1), visitor_id, m.tmdb_id, m.media_type);
+  });
+  finalOrder.forEach((m, i) => {
+    stampNeg.run(slotValues[i], visitor_id, m.tmdb_id, m.media_type);
+  });
+}
+
+
+/* ============================================================================
    SECTION 3: MIDDLEWARE
    ============================================================================ */
 
@@ -374,14 +586,11 @@ app.get('/api/list/:id', (req, res) => {
 /* ============================================================================
    SECTION 6: JOIN LIST — POST /api/list/:id/join
    ============================================================================
-   Assigns a visitor to the next available slot (1-10) on this list.
-   If the visitor already has a slot, returns that slot.
-   If all 10 slots are taken, returns an error.
-
-   After assigning a slot, initializes ranks for all existing movies:
-   each movie gets a sequential rank (1, 2, 3...) in movie-ID order.
-   This means a new visitor immediately has a complete ranking — no gaps,
-   no NULLs in their column.
+   Assigns a visitor to the next available slot (1-10) on this list, then
+   ensures they have a master_rank entry for every movie already on the list
+   (appending unfamiliar keys at the end of their master order, leaving any
+   keys they already had alone). Re-projects userN_rank cache for this
+   visitor's slot.
 
    Body: { visitor_id }
    Returns: { slot: N }
@@ -391,46 +600,41 @@ app.post('/api/list/:id/join', (req, res) => {
   const listId = req.params.id;
   const { visitor_id } = req.body;
 
-  /* create the list if it doesn't exist yet — so the first visitor to set
-     their name on a brand-new URL becomes visible via GET /api/list/:id */
   const existingList = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
   if (!existingList) {
     db.prepare('INSERT INTO lists (id, created) VALUES (?, ?)')
       .run(listId, new Date().toISOString().split('T')[0]);
   }
 
-  /* check if this visitor already has a slot on this list */
   const existing = db.prepare(
     'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
   ).get(listId, visitor_id);
-  if (existing) return res.json({ slot: existing.slot });          // already joined
+  if (existing) return res.json({ slot: existing.slot });
 
-  /* find the next open slot (1-10) */
   const taken = db.prepare(
     'SELECT slot FROM list_visitors WHERE list_id = ? ORDER BY slot'
   ).all(listId).map(r => r.slot);
-
   let nextSlot = null;
   for (let s = 1; s <= 10; s++) {
     if (!taken.includes(s)) { nextSlot = s; break; }
   }
   if (!nextSlot) return res.status(400).json({ error: 'list full (max 10 visitors)' });
 
-  /* assign the slot */
-  db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
-    .run(listId, nextSlot, visitor_id);
+  const join = db.transaction(() => {
+    db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
+      .run(listId, nextSlot, visitor_id);
 
-  /* initialize ranks for all existing movies in this slot's column
-     each movie gets a sequential rank (1, 2, 3...) in movie-ID order */
-  const movies = db.prepare(
-    'SELECT id FROM movies WHERE list_id = ? ORDER BY id'
-  ).all(listId);
+    const existingMovies = db.prepare(
+      'SELECT tmdb_id, media_type FROM movies WHERE list_id = ? ORDER BY id'
+    ).all(listId);
+    existingMovies.forEach(m => {
+      ensureUserMovieKeepOrAppend(visitor_id, m.tmdb_id, m.media_type);
+    });
 
-  const col = 'user' + nextSlot + '_rank';
-  const stmt = db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?');
-  movies.forEach((m, i) => {
-    stmt.run(i + 1, m.id);                                         // rank 1, 2, 3, ...
+    /* master_rank may have grown — re-project every list this visitor is on */
+    reprojectAllListsForVisitor(visitor_id);
   });
+  join();
 
   res.json({ slot: nextSlot });
 });
@@ -476,12 +680,15 @@ app.get('/api/list/:id/check-name/:name', (req, res) => {
      media_type is 'movie' or 'tv'; defaults to 'movie' so older clients keep working.
 
    After inserting the movie:
-   1. If the visitor doesn't have a slot yet, auto-join them (next open slot).
-   2. For every occupied slot, set that slot's rank for this movie to
-      (current movie count) — the new movie starts at LAST PLACE for everyone.
-
-   This guarantees: after adding a movie, every visitor has a rank for it,
-   and no visitor has any gaps in their ranking numbers.
+   1. If the visitor doesn't have a slot yet, auto-join them (next open slot)
+      and ensure their master_rank entries exist for every pre-existing movie
+      on the list (appended at the end of their master order).
+   2. The adder gets the new movie at master_rank = 1 (everything else of
+      theirs shifts down by 1). Other visitors on the list get the new movie
+      appended to the end of their master order — UNLESS they already had a
+      master_rank for the same (tmdb_id, media_type) from another list, in
+      which case their existing position is preserved.
+   3. Re-projects userN_rank cache for every occupied slot on the list.
    ============================================================================ */
 
 app.post('/api/list/:id/movies', (req, res) => {
@@ -546,79 +753,83 @@ app.post('/api/list/:id/movies', (req, res) => {
       .run(listId, new Date().toISOString().split('T')[0]);
   }
 
-  /* check for duplicate — same TMDB item already on this list (id+type) */
-  const existing = db.prepare(
-    'SELECT * FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
-  ).get(listId, tmdbIdNum, mediaType);
-  if (existing) return res.json(existing);
-
-  /* auto-join: if this visitor has no slot, assign one now */
-  let visitorSlot = db.prepare(
-    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
-  ).get(listId, visitor_id);
-
-  if (!visitorSlot) {
-    /* find next open slot */
-    const taken = db.prepare(
-      'SELECT slot FROM list_visitors WHERE list_id = ? ORDER BY slot'
-    ).all(listId).map(r => r.slot);
-
-    let nextSlot = null;
-    for (let s = 1; s <= 10; s++) {
-      if (!taken.includes(s)) { nextSlot = s; break; }
-    }
-    if (!nextSlot) return res.status(400).json({ error: 'list full' });
-
-    db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
-      .run(listId, nextSlot, visitor_id);
-    visitorSlot = { slot: nextSlot };
-
-    /* initialize this new visitor's ranks for all EXISTING movies */
-    const existingMovies = db.prepare(
-      'SELECT id FROM movies WHERE list_id = ? ORDER BY id'
-    ).all(listId);
-    const col = 'user' + nextSlot + '_rank';
-    const initStmt = db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?');
-    existingMovies.forEach((m, i) => {
-      initStmt.run(i + 1, m.id);
-    });
+  /* check for duplicate — same TMDB item already on this list (id+type).
+     A NULL tmdbIdNum can't collide because SQL NULL never equals NULL. */
+  if (tmdbIdNum != null) {
+    const existing = db.prepare(
+      'SELECT * FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
+    ).get(listId, tmdbIdNum, mediaType);
+    if (existing) return res.json(existing);
   }
 
-  /* insert the new movie — note we store the VALIDATED values (tmdbIdNum,
-     validYear, validPoster), not the raw request body fields. */
-  const result = db.prepare(
-    'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(listId, tmdbIdNum, mediaType, title, validYear, validPoster, visitor_id);
-  const newMovieId = result.lastInsertRowid;
+  /* All the writes below run inside a single transaction so an error mid-way
+     leaves the DB in its prior state. */
+  const addTx = db.transaction(() => {
+    let slot = db.prepare(
+      'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+    ).get(listId, visitor_id);
 
-  /* count total movies now (including the one we just added) — this is the
-     new movie's rank (last place) for everyone */
-  const movieCount = db.prepare(
-    'SELECT COUNT(*) as n FROM movies WHERE list_id = ?'
-  ).get(listId).n;
+    if (!slot) {
+      const taken = db.prepare(
+        'SELECT slot FROM list_visitors WHERE list_id = ? ORDER BY slot'
+      ).all(listId).map(r => r.slot);
+      let nextSlot = null;
+      for (let s = 1; s <= 10; s++) {
+        if (!taken.includes(s)) { nextSlot = s; break; }
+      }
+      if (!nextSlot) throw new Error('list full');
 
-  /* set every occupied slot's rank for this new movie to last place,
-     EXCEPT the adder gets it at #1 (bump all their other movies down) */
-  const slots = db.prepare(
-    'SELECT slot FROM list_visitors WHERE list_id = ?'
-  ).all(listId);
+      db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
+        .run(listId, nextSlot, visitor_id);
+      slot = { slot: nextSlot };
 
-  slots.forEach(s => {
-    const col = 'user' + s.slot + '_rank';
-    if (s.slot === visitorSlot.slot) {
-      /* adder: bump all existing movies down by 1, then set new movie to rank 1 */
-      db.prepare(
-        'UPDATE movies SET ' + col + ' = ' + col + ' + 1 WHERE list_id = ? AND id != ?'
-      ).run(listId, newMovieId);
-      db.prepare('UPDATE movies SET ' + col + ' = 1 WHERE id = ?').run(newMovieId);
-    } else {
-      /* everyone else: new movie goes to last place */
-      db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?')
-        .run(movieCount, newMovieId);
+      /* new joiner: ensure master_rank entries for every pre-existing movie */
+      const existingMovies = db.prepare(
+        'SELECT tmdb_id, media_type FROM movies WHERE list_id = ? ORDER BY id'
+      ).all(listId);
+      existingMovies.forEach(m => {
+        ensureUserMovieKeepOrAppend(visitor_id, m.tmdb_id, m.media_type);
+      });
     }
+
+    const result = db.prepare(
+      'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(listId, tmdbIdNum, mediaType, title, validYear, validPoster, visitor_id);
+    const newMovieId = result.lastInsertRowid;
+
+    /* update master_rank for every occupied slot on this list:
+       adder → master_rank 1 (bump everything else down)
+       others → keep existing master_rank, or append at end if absent */
+    const slots = db.prepare(
+      'SELECT slot, visitor_id FROM list_visitors WHERE list_id = ?'
+    ).all(listId);
+    slots.forEach(s => {
+      const v = db.prepare('SELECT id FROM visitors WHERE id = ?').get(s.visitor_id);
+      if (!v) return;                                                // orphan slot, skip
+      if (s.visitor_id === visitor_id) {
+        ensureUserMovieAtTop(s.visitor_id, tmdbIdNum, mediaType);
+      } else {
+        ensureUserMovieKeepOrAppend(s.visitor_id, tmdbIdNum, mediaType);
+      }
+    });
+
+    /* re-project: master_rank changed for every visitor on this list, and
+       those changes propagate to all OTHER lists those visitors are on too */
+    slots.forEach(s => {
+      reprojectAllListsForVisitor(s.visitor_id);
+    });
+
+    return newMovieId;
   });
 
-  /* return the full new movie row */
+  let newMovieId;
+  try {
+    newMovieId = addTx();
+  } catch (e) {
+    if (e.message === 'list full') return res.status(400).json({ error: 'list full' });
+    throw e;
+  }
+
   const newMovie = db.prepare('SELECT * FROM movies WHERE id = ?').get(newMovieId);
   res.json(newMovie);
 });
@@ -629,9 +840,12 @@ app.post('/api/list/:id/movies', (req, res) => {
    ============================================================================
    Removes a movie from the list. Only the person who added it can remove it.
 
-   After deleting, re-compacts ranks: for every occupied slot, any movie
-   whose rank was GREATER than the deleted movie's rank gets decremented
-   by 1. This keeps ranks contiguous (1, 2, 3... with no gaps).
+   After deletion:
+   - If the same (tmdb_id, media_type) is still present on some other list,
+     master_rank entries stay (the key still belongs in the visitor's shelf).
+   - If this was the last copy anywhere in the DB, every visitor's
+     user_movies row for it is dropped and their master_rank is re-compacted.
+   - userN_rank cache is re-projected for every occupied slot on this list.
    ============================================================================ */
 
 app.delete('/api/list/:id/movies/:movieId', (req, res) => {
@@ -639,31 +853,28 @@ app.delete('/api/list/:id/movies/:movieId', (req, res) => {
   const movieId = parseInt(req.params.movieId);
   const { visitor_id } = req.body;
 
-  /* verify ownership */
   const movie = db.prepare('SELECT * FROM movies WHERE id = ? AND list_id = ?')
     .get(movieId, listId);
   if (!movie) return res.status(404).json({ error: 'movie not found' });
   if (movie.added_by !== visitor_id) return res.status(403).json({ error: 'not your movie' });
 
-  /* for each occupied slot, find the deleted movie's rank and re-compact */
-  const slots = db.prepare(
-    'SELECT slot FROM list_visitors WHERE list_id = ?'
-  ).all(listId);
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM movies WHERE id = ?').run(movieId);
+    const orphaned = cleanupOrphanedKey(movie.tmdb_id, movie.media_type);
 
-  slots.forEach(s => {
-    const col = 'user' + s.slot + '_rank';
-    const deletedRank = movie[col];                                // what rank did this movie have?
-    if (deletedRank != null) {
-      /* decrement all ranks that were below (higher number = lower rank) */
-      db.prepare(
-        'UPDATE movies SET ' + col + ' = ' + col + ' - 1 '
-        + 'WHERE list_id = ? AND ' + col + ' > ?'
-      ).run(listId, deletedRank);
+    if (orphaned) {
+      /* every visitor who had this key needs every one of their lists
+         re-projected, since their master_rank changed */
+      const allVisitors = db.prepare(
+        'SELECT DISTINCT visitor_id FROM list_visitors'
+      ).all().map(r => r.visitor_id);
+      allVisitors.forEach(v => reprojectAllListsForVisitor(v));
+    } else {
+      /* key still exists somewhere — only this list's cache changed */
+      reprojectListForAllVisitors(listId);
     }
   });
-
-  /* now delete the movie row */
-  db.prepare('DELETE FROM movies WHERE id = ?').run(movieId);
+  tx();
 
   res.json({ ok: true });
 });
@@ -675,59 +886,56 @@ app.delete('/api/list/:id/movies/:movieId', (req, res) => {
    Moves a movie up or down by one position in a visitor's ranking.
 
    Body: { slot, movieId, direction: "up" | "down" }
+     "up"   — list-rank gets SMALLER (closer to #1)
+     "down" — list-rank gets BIGGER  (further from #1)
 
-   "up" means rank gets SMALLER (closer to #1).
-   "down" means rank gets BIGGER (further from #1).
-
-   Finds the movie at the target rank and swaps the two. Two UPDATEs.
-   This replaces the old drag-and-drop system entirely.
+   Implementation: read the current list order (by userN_rank cache), swap
+   the dragged movie with its visible neighbor, then call setListProjection
+   which permutes the master_rank slots and re-projects the cache. End state:
+   master_rank stays contiguous, userN_rank cache reflects the new order.
    ============================================================================ */
+
+function readSlotOwner (listId, slotNum) {
+  return db.prepare(
+    'SELECT visitor_id FROM list_visitors WHERE list_id = ? AND slot = ?'
+  ).get(listId, slotNum);
+}
+
+function readListOrder (listId, slotNum) {
+  const col = 'user' + slotNum + '_rank';
+  return db.prepare(
+    'SELECT id FROM movies WHERE list_id = ? '
+    + 'ORDER BY ' + col + ' IS NULL, ' + col + ', id'
+  ).all(listId).map(r => r.id);
+}
 
 app.put('/api/list/:id/swap', (req, res) => {
   const listId = req.params.id;
   const { slot, movieId, direction } = req.body;
 
-  /* SECURITY: `slot` is concatenated into the SQL column name on the next
-     line — `'user' + slot + '_rank'`. Every other endpoint that builds
-     this column reads `slot` from the list_visitors table (where it's
-     constrained to 1..10 by a CHECK), but /swap and /move take it
-     directly from the request body. Without this guard, a payload like
-     `1_rank = 0, list_id = 'other' --` produces a syntactically valid
-     UPDATE that re-parents movie rows. better-sqlite3 blocks
-     multi-statement strings, so DROP TABLE etc. is impossible, but
-     re-parenting / clobbering columns is not. Restricting to a literal
-     integer 1..10 closes the surface entirely. */
   const slotNum = Number(slot);
   if (!Number.isInteger(slotNum) || slotNum < 1 || slotNum > 10) {
     return res.status(400).json({ error: 'invalid slot' });
   }
 
-  const col = 'user' + slotNum + '_rank';
+  const owner = readSlotOwner(listId, slotNum);
+  if (!owner) return res.status(400).json({ error: 'slot not assigned' });
 
-  /* get the current rank of the movie being moved */
-  const movie = db.prepare('SELECT id, ' + col + ' as rank FROM movies WHERE id = ? AND list_id = ?')
-    .get(movieId, listId);
-  if (!movie) return res.status(404).json({ error: 'movie not found' });
+  const order = readListOrder(listId, slotNum);
+  const idx = order.indexOf(parseInt(movieId));
+  if (idx < 0) return res.status(404).json({ error: 'movie not on this list' });
 
-  /* calculate the target rank */
-  const targetRank = direction === 'up' ? movie.rank - 1 : movie.rank + 1;
+  const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+  if (targetIdx < 0 || targetIdx >= order.length) return res.json({ ok: true });
 
-  /* bounds check: can't go above 1 or below movie count */
-  const movieCount = db.prepare('SELECT COUNT(*) as n FROM movies WHERE list_id = ?').get(listId).n;
-  if (targetRank < 1 || targetRank > movieCount) {
-    return res.json({ ok: true });                                 // no-op, already at the edge
-  }
+  /* swap the two array elements */
+  [order[idx], order[targetIdx]] = [order[targetIdx], order[idx]];
 
-  /* find the movie currently at the target rank */
-  const other = db.prepare(
-    'SELECT id FROM movies WHERE list_id = ? AND ' + col + ' = ?'
-  ).get(listId, targetRank);
-
-  if (!other) return res.json({ ok: true });                       // shouldn't happen, but safe
-
-  /* swap: give our movie the target rank, give the other movie our old rank */
-  db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(targetRank, movieId);
-  db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(movie.rank, other.id);
+  const tx = db.transaction(() => {
+    setListProjection(owner.visitor_id, listId, order);
+    reprojectAllListsForVisitor(owner.visitor_id);
+  });
+  tx();
 
   res.json({ ok: true });
 });
@@ -736,50 +944,37 @@ app.put('/api/list/:id/swap', (req, res) => {
 /* ============================================================================
    SECTION 10b: MOVE TO TOP/BOTTOM — PUT /api/list/:id/move
    ============================================================================
-   Moves a movie to rank 1 (top) or last place (bottom) in a visitor's ranking.
-
+   Moves a movie to list-rank 1 (top) or last place (bottom) for one visitor.
    Body: { slot, movieId, direction: "top" | "bottom" }
-
-   Shifts all movies in between to fill the gap and make room.
    ============================================================================ */
 
 app.put('/api/list/:id/move', (req, res) => {
   const listId = req.params.id;
   const { slot, movieId, direction } = req.body;
 
-  /* SECURITY: same column-name injection risk as /swap above — `slot` is
-     concatenated into the SQL column name. Restrict to integer 1..10. */
   const slotNum = Number(slot);
   if (!Number.isInteger(slotNum) || slotNum < 1 || slotNum > 10) {
     return res.status(400).json({ error: 'invalid slot' });
   }
 
-  const col = 'user' + slotNum + '_rank';
+  const owner = readSlotOwner(listId, slotNum);
+  if (!owner) return res.status(400).json({ error: 'slot not assigned' });
 
-  /* get the current rank of the movie being moved */
-  const movie = db.prepare('SELECT id, ' + col + ' as rank FROM movies WHERE id = ? AND list_id = ?')
-    .get(movieId, listId);
-  if (!movie) return res.status(404).json({ error: 'movie not found' });
+  const order = readListOrder(listId, slotNum);
+  const mid = parseInt(movieId);
+  const idx = order.indexOf(mid);
+  if (idx < 0) return res.status(404).json({ error: 'movie not on this list' });
 
-  const movieCount = db.prepare('SELECT COUNT(*) as n FROM movies WHERE list_id = ?').get(listId).n;
-  const targetRank = (direction === 'top') ? 1 : movieCount;
+  /* pull out and re-insert at the right end */
+  order.splice(idx, 1);
+  if (direction === 'top') order.unshift(mid);
+  else order.push(mid);
 
-  if (movie.rank === targetRank) return res.json({ ok: true });       // already there
-
-  if (direction === 'top') {
-    /* shift everything above (rank < current) down by 1 to make room at rank 1 */
-    db.prepare(
-      'UPDATE movies SET ' + col + ' = ' + col + ' + 1 WHERE list_id = ? AND ' + col + ' < ? AND id != ?'
-    ).run(listId, movie.rank, movieId);
-  } else {
-    /* shift everything below (rank > current) up by 1 to fill the gap */
-    db.prepare(
-      'UPDATE movies SET ' + col + ' = ' + col + ' - 1 WHERE list_id = ? AND ' + col + ' > ? AND id != ?'
-    ).run(listId, movie.rank, movieId);
-  }
-
-  /* set the movie to its new rank */
-  db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(targetRank, movieId);
+  const tx = db.transaction(() => {
+    setListProjection(owner.visitor_id, listId, order);
+    reprojectAllListsForVisitor(owner.visitor_id);
+  });
+  tx();
 
   res.json({ ok: true });
 });
@@ -788,13 +983,9 @@ app.put('/api/list/:id/move', (req, res) => {
 /* ============================================================================
    SECTION 10c: BULK RANK RESET — PUT /api/list/:id/my-ranks
    ============================================================================
-   Resets the caller's personal ranking to match a given movie order. Used
-   by the Details paste flow to apply the order of movies in the textarea
-   to the current user's column. Movies present on the list but not in the
-   supplied order are pushed past the ordered ones, keeping their current
-   relative order. Ranks end up contiguous 1..N.
-
-   Body: { visitor_id, ordered_movie_ids: [int, ...] }
+   Sets one visitor's full list ordering at once. Body: { visitor_id,
+   ordered_movie_ids: [int, ...] }. Movies on the list but absent from the
+   array get appended (preserving current relative order).
    ============================================================================ */
 
 app.put('/api/list/:id/my-ranks', (req, res) => {
@@ -806,26 +997,11 @@ app.put('/api/list/:id/my-ranks', (req, res) => {
   ).get(listId, visitor_id);
   if (!slotRow) return res.status(400).json({ error: 'visitor not on this list' });
 
-  const col = 'user' + slotRow.slot + '_rank';
-
-  const allMovies = db.prepare(
-    'SELECT id, ' + col + ' as rank FROM movies WHERE list_id = ?'
-  ).all(listId);
-
-  const orderedSet = new Set(ordered_movie_ids);
-  const tail = allMovies
-    .filter(m => !orderedSet.has(m.id))
-    .sort((a, b) => {
-      if (a.rank == null && b.rank == null) return 0;
-      if (a.rank == null) return 1;
-      if (b.rank == null) return -1;
-      return a.rank - b.rank;
-    });
-
-  const update = db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ? AND list_id = ?');
-  let rank = 1;
-  ordered_movie_ids.forEach(mid => { update.run(rank++, mid, listId); });
-  tail.forEach(m => { update.run(rank++, m.id, listId); });
+  const tx = db.transaction(() => {
+    setListProjection(visitor_id, listId, ordered_movie_ids);
+    reprojectAllListsForVisitor(visitor_id);
+  });
+  tx();
 
   res.json({ ok: true });
 });

@@ -2387,6 +2387,10 @@ function renderShelfBare () {
     '<div class="tab tab-mine tab-new tab-active">'
     + '<input id="name-input" class="tab-name-input" type="text" '
     +   'placeholder="Type your name" autocomplete="off" maxlength="' + NAME_MAX_LEN + '">'
+    + '</div>'
+    + '<div class="tab tab-new tab-shelf-newlist">'
+    + '<input id="newlist-input" class="tab-name-input" type="text" '
+    +   'placeholder="Name a new list" autocomplete="off" maxlength="12">'
     + '</div>';
 
   const searchBox = document.getElementById('search-box');
@@ -2395,24 +2399,27 @@ function renderShelfBare () {
   if (searchBox) searchBox.style.display = 'none';
   if (colorDot)  colorDot.style.display = 'none';
   if (welcome)   { welcome.style.display = 'block';
-                   welcome.textContent = 'Welcome — name yourself to start your shelf.'; }
+                   welcome.textContent = 'Welcome — name yourself, or start a list.'; }
 
   const infoBtn = document.querySelector('.action-btn[data-action="info"]');
   if (infoBtn) infoBtn.style.display = 'none';                   /* INFO is being replaced by Manage */
+  /* Manage stays available so a first-time visitor can paste a visitor ID
+     to "become this user". ALL/NONE has nothing to select against here. */
+  document.querySelectorAll('.action-btn.shelf-only').forEach(b => {
+    if (b.dataset.action === 'select-all') b.style.display = 'none';
+    else b.style.display = '';
+  });
 
   document.getElementById('movie-list').innerHTML = '';
 }
 
 function renderShelf () {
-  /* Search row: the search box and color-dot stay hidden for now (search auto-
-     adds to the solo list — step 8). The Help button stays. INFO is gone;
-     ALL/NONE and Manage replace it. */
+  /* Search box visible on the user-tab (auto-adds to solo). Hidden on
+     list-tabs for now — step 8 sticks to user-tab search. The Help button
+     stays. INFO is gone; ALL/NONE and Manage are shelf-only. */
   const searchBox = document.getElementById('search-box');
   const welcome   = document.getElementById('welcome-msg');
   const colorDot  = document.getElementById('my-color-dot');
-  if (searchBox) searchBox.style.display = 'none';
-  if (welcome)   welcome.style.display = 'none';
-  if (colorDot)  colorDot.style.display = 'none';
   const infoBtn = document.querySelector('.action-btn[data-action="info"]');
   if (infoBtn) infoBtn.style.display = 'none';
   document.querySelectorAll('.action-btn.shelf-only').forEach(b => {
@@ -2424,6 +2431,17 @@ function renderShelf () {
     activeTab === 'me' ||
     (shelfData.lists && shelfData.lists.some(l => l.id === activeTab));
   if (!knownTab) activeTab = 'me';
+
+  if (searchBox) {
+    if (activeTab === 'me') {
+      searchBox.style.display = '';
+      searchBox.placeholder = 'Add a movie to your shelf...';
+    } else {
+      searchBox.style.display = 'none';
+    }
+  }
+  if (welcome)  welcome.style.display = 'none';
+  if (colorDot) colorDot.style.display = 'none';
 
   renderShelfTabs();
   renderShelfMovieList();
@@ -2481,8 +2499,10 @@ function renderShelfTabs () {
 
   /* one list-tab per joined list. When active, the nickname becomes editable
      (tap-again-to-edit, like the username) and a "couchlist" sidebutton is
-     attached on the right. */
-  shelfData.lists.forEach(l => {
+     attached on the right. The visitor's solo list is hidden from the strip
+     — it surfaces in the user-tab's added-movies and as a Manage destination,
+     but doesn't get its own tab (per spec). */
+  shelfData.lists.filter(l => !l.private).forEach(l => {
     const label = l.list_name && l.list_name.trim() ? l.list_name : l.id;
     const isActive = activeTab === l.id;
     const ready = l.ready;
@@ -2651,6 +2671,30 @@ async function commitShelfReorder (orderedKeys) {
   await loadShelf();
 }
 
+async function addMovieToShelf (tmdbMovie) {
+  if (!visitor) {
+    alert('Type your name first.');
+    return;
+  }
+  const year = formatYear(tmdbMovie.release_date);
+  await fetch(API + '/visitor/' + visitorId + '/solo-add', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tmdb_id: tmdbMovie.id,
+      media_type: tmdbMovie.media_type || 'movie',
+      title: tmdbMovie.title,
+      year: year,
+      poster: tmdbMovie.poster_path
+    })
+  });
+  document.getElementById('search-box').value = '';
+  searchResults = [];
+  renderSearchResults();
+  hideMoviePopup();
+  await loadShelf();
+}
+
 async function commitShelfListReorder (listId, orderedMovieIds) {
   await fetch(API + '/list/' + listId + '/my-ranks', {
     method: 'PUT',
@@ -2689,6 +2733,26 @@ async function shelfToggleReady (listId) {
 function setupShelfEventListeners () {
   /* Drag — same handler as list mode, branches on appMode internally. */
   document.addEventListener('pointerdown', onGrabPointerDown);
+
+  /* Search — wire the existing TMDB search infrastructure once. The
+     searchTMDB → renderSearchResults pipeline is shared with list mode.
+     Click-to-add branches based on activeTab: user-tab → solo-add, list-tab
+     reserved for a future step (currently nobody hits this in shelf mode). */
+  const searchBoxEl = document.getElementById('search-box');
+  if (searchBoxEl) {
+    searchBoxEl.addEventListener('input', e => debouncedSearch(e.target.value));
+  }
+  const searchResultsEl = document.getElementById('search-results');
+  if (searchResultsEl) {
+    searchResultsEl.addEventListener('click', e => {
+      const resultEl = e.target.closest('.search-result');
+      if (!resultEl) return;
+      const tmdbId = parseInt(resultEl.dataset.tmdbId);
+      const mediaType = resultEl.dataset.mediaType || 'movie';
+      const movie = searchResults.find(m => m.id === tmdbId && m.media_type === mediaType);
+      if (movie) addMovieToShelf(movie);
+    });
+  }
 
   /* Help button — reuses the existing modal (which is still list-mode-flavored;
      a shelf-specific version arrives in step 7). */
@@ -2803,6 +2867,31 @@ function setupShelfEventListeners () {
       e.preventDefault();
       e.target.blur();                                              /* triggers focusout commit */
     }
+    /* First-time landing: typing a list name + Enter creates a new list,
+       joins, sets nickname. Visitor must have a name set first (otherwise
+       the prompt is to name themselves). */
+    if (e.target && e.target.id === 'newlist-input' && e.key === 'Enter') {
+      const text = (e.target.value || '').trim();
+      if (!text) return;
+      if (!visitor) {
+        alert('Type your name first (left tab).');
+        return;
+      }
+      const newListId = generateId(LIST_ID_LEN);
+      await fetch(API + '/list/' + newListId + '/join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visitor_id: visitorId })
+      });
+      await fetch(API + '/list/' + newListId + '/list-name', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visitor_id: visitorId, list_name: text })
+      });
+      activeTab = newListId;
+      shelfSelected = null;
+      await loadShelf();
+    }
   });
 
   /* commit the list-nickname input when the user moves focus away */
@@ -2884,15 +2973,17 @@ function renderManageModalHtml () {
   const v = shelfData.visitor;
   const blob = buildShelfBlob();
 
-  /* Dest-list options: every list this visitor is on. (Solo list lands in
-     step 8.) Default UNCHECKED — user explicitly picks where to send. */
+  /* Dest-list options: every list this visitor is on, including their
+     solo list (rendered with a distinguishing label). Default UNCHECKED. */
   const destsHtml = shelfData.lists.map(l => {
-    const label = l.list_name && l.list_name.trim() ? l.list_name : l.id;
-    return '<label class="manage-dest-row">'
+    let label;
+    if (l.private) label = 'Solo (only you)';
+    else label = l.list_name && l.list_name.trim() ? l.list_name : l.id;
+    const idHint = l.private ? '' : ' <span class="manage-dest-id">(' + escapeHtml(l.id) + ')</span>';
+    return '<label class="manage-dest-row' + (l.private ? ' manage-dest-solo' : '') + '">'
       + '<input type="checkbox" class="manage-dest-cb" '
         + 'data-list-id="' + escapeHtml(l.id) + '">'
-      + '<span class="manage-dest-label">' + escapeHtml(label)
-        + ' <span class="manage-dest-id">(' + escapeHtml(l.id) + ')</span></span>'
+      + '<span class="manage-dest-label">' + escapeHtml(label) + idHint + '</span>'
       + '</label>';
   }).join('');
 

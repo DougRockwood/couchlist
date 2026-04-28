@@ -244,6 +244,33 @@ try {
 
 
 /* ============================================================================
+   SECTION 2b1: ACCESS GUARD  (added 2026-04-28 — step 8)
+   ============================================================================
+   Solo lists (private=1) are owned by exactly one visitor. checkListAccess
+   returns { found: true, list } if the list is public OR the requester is
+   the owner; otherwise { found: false } (caller treats as 404 — never leak
+   the list's existence). All list-mutating endpoints call this before doing
+   any work; GET also calls it before returning bodies.
+
+   The guard is intentionally lax for the rank PUTs (/swap, /move): those
+   endpoints take a slot, and on a private list the only assigned slot is
+   the owner's, so the existing slot-based path naturally constrains writes
+   to owner-only. (Belt-and-suspenders we may add later.)
+   ============================================================================ */
+
+function checkListAccess (listId, requesterId) {
+  const list = db.prepare(
+    'SELECT id, created, private, owner_visitor_id FROM lists WHERE id = ?'
+  ).get(listId);
+  if (!list) return { found: false };
+  if (list.private && list.owner_visitor_id !== requesterId) {
+    return { found: false };                                       /* hide existence */
+  }
+  return { found: true, list };
+}
+
+
+/* ============================================================================
    SECTION 2c: MASTER-RANK HELPERS  (added 2026-04-26 — step 2 of My Shelf rollout)
    ============================================================================
    user_movies is the source of truth for every visitor's ordering of every
@@ -824,6 +851,108 @@ app.post('/api/visitor/:id/copy', (req, res) => {
 });
 
 
+/* POST /api/visitor/:id/solo-add — add a movie to the visitor's solo list.
+
+   The solo list (formerly "no one can know") is a per-visitor private list
+   used to stash movies that aren't on any couchlist. ID convention: first 8
+   chars of the 10-char visitor ID. Lazily created on first use, flagged
+   private=1 with owner_visitor_id=vid so it's hidden from non-owners.
+
+   Body: { tmdb_id, media_type, title, year, poster }
+   Returns: the inserted movie row. */
+app.post('/api/visitor/:id/solo-add', (req, res) => {
+  const vid = req.params.id;
+  const visitor = db.prepare('SELECT id FROM visitors WHERE id = ?').get(vid);
+  if (!visitor) return res.status(404).json({ error: 'visitor not found' });
+
+  /* validate item — same rules as POST /movies + /copy */
+  const { tmdb_id, media_type, title, year, poster } = req.body;
+  const mediaType = media_type === 'tv' ? 'tv' : 'movie';
+  if (!Number.isInteger(tmdb_id) || tmdb_id <= 0) {
+    return res.status(400).json({ error: 'invalid tmdb_id' });
+  }
+  let validYear;
+  if (year == null || year === '' || year === '?') {
+    validYear = (year === '?') ? '?' : null;
+  } else {
+    const yn = Number(year);
+    if (!Number.isInteger(yn) || yn < 1800 || yn > 2100) {
+      return res.status(400).json({ error: 'invalid year' });
+    }
+    validYear = yn;
+  }
+  let validPoster = null;
+  if (poster != null && poster !== '') {
+    if (!(typeof poster === 'string' && /^\/[A-Za-z0-9_.-]+$/.test(poster))) {
+      return res.status(400).json({ error: 'invalid poster' });
+    }
+    validPoster = poster;
+  }
+
+  const soloId = vid.slice(0, 8);
+
+  const tx = db.transaction(() => {
+    let lst = db.prepare('SELECT * FROM lists WHERE id = ?').get(soloId);
+    if (!lst) {
+      db.prepare(
+        'INSERT INTO lists (id, created, private, owner_visitor_id) VALUES (?, ?, 1, ?)'
+      ).run(soloId, new Date().toISOString().split('T')[0], vid);
+      lst = db.prepare('SELECT * FROM lists WHERE id = ?').get(soloId);
+    } else if (lst.owner_visitor_id !== vid) {
+      /* Extreme edge case — visitor's first-8-of-id collides with an
+         existing public list. Refuse rather than silently pivot the list to
+         private under someone else. */
+      throw new Error('solo id collision');
+    }
+
+    /* auto-join the visitor (slot 1) */
+    let slot = db.prepare(
+      'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+    ).get(soloId, vid);
+    if (!slot) {
+      db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, 1, ?)')
+        .run(soloId, vid);
+      const existingMovies = db.prepare(
+        'SELECT tmdb_id, media_type FROM movies WHERE list_id = ? ORDER BY id'
+      ).all(soloId);
+      existingMovies.forEach(m => {
+        ensureUserMovieKeepOrAppend(vid, m.tmdb_id, m.media_type);
+      });
+      slot = { slot: 1 };
+    }
+
+    /* duplicate? same tmdb item already on solo */
+    const dup = db.prepare(
+      'SELECT * FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
+    ).get(soloId, tmdb_id, mediaType);
+    if (dup) return dup;
+
+    const result = db.prepare(
+      'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by) '
+      + 'VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(soloId, tmdb_id, mediaType, title || '', validYear, validPoster, vid);
+    const newId = result.lastInsertRowid;
+
+    /* adder semantics — master_rank to top */
+    ensureUserMovieAtTop(vid, tmdb_id, mediaType);
+
+    reprojectAllListsForVisitor(vid);
+
+    return db.prepare('SELECT * FROM movies WHERE id = ?').get(newId);
+  });
+
+  let row;
+  try { row = tx(); }
+  catch (e) {
+    if (e.message === 'solo id collision') {
+      return res.status(409).json({ error: 'solo list id collides with existing public list' });
+    }
+    throw e;
+  }
+  res.json(row);
+});
+
+
 /* DELETE /api/visitor/:id — only succeeds if the visitor is "untouched":
    no name set AND no slot in any list. Used by the Details paste flow when
    a brand-new visitor adopts an existing ID and we want to recycle the
@@ -872,8 +1001,9 @@ app.get('/api/list/:id', (req, res) => {
      list). Other visitors' nicknames stay private. */
   const requesterId = req.query.visitor_id;
 
+  const access = checkListAccess(listId, requesterId);
+  if (!access.found) return res.status(404).json({ error: 'list not found' });
   const list = db.prepare('SELECT * FROM lists WHERE id = ?').get(listId);
-  if (!list) return res.status(404).json({ error: 'list not found' });
 
   const movies = db.prepare('SELECT * FROM movies WHERE list_id = ?').all(listId);
 
@@ -913,6 +1043,15 @@ app.get('/api/list/:id', (req, res) => {
 app.post('/api/list/:id/join', (req, res) => {
   const listId = req.params.id;
   const { visitor_id } = req.body;
+
+  const access = checkListAccess(listId, visitor_id);
+  if (!access.found) {
+    /* If the list doesn't exist at all, the visitor is creating it (public).
+       But if it exists and they're not allowed in (private + non-owner),
+       refuse without leaking. */
+    const existsAtAll = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
+    if (existsAtAll) return res.status(404).json({ error: 'list not found' });
+  }
 
   const existingList = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
   if (!existingList) {
@@ -1067,6 +1206,13 @@ app.post('/api/list/:id/movies', (req, res) => {
       .run(listId, new Date().toISOString().split('T')[0]);
   }
 
+  /* private-list access — refuse if list exists private and caller isn't owner */
+  const access = checkListAccess(listId, visitor_id);
+  if (!access.found) {
+    const existsAtAll = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
+    if (existsAtAll) return res.status(404).json({ error: 'list not found' });
+  }
+
   /* check for duplicate — same TMDB item already on this list (id+type).
      A NULL tmdbIdNum can't collide because SQL NULL never equals NULL. */
   if (tmdbIdNum != null) {
@@ -1166,6 +1312,9 @@ app.delete('/api/list/:id/movies/:movieId', (req, res) => {
   const listId = req.params.id;
   const movieId = parseInt(req.params.movieId);
   const { visitor_id } = req.body;
+
+  const access = checkListAccess(listId, visitor_id);
+  if (!access.found) return res.status(404).json({ error: 'list not found' });
 
   const movie = db.prepare('SELECT * FROM movies WHERE id = ? AND list_id = ?')
     .get(movieId, listId);

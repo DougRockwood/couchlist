@@ -71,6 +71,17 @@ let expandedComment   = null;
 let movieDetailCache  = {};
 let displayNames      = {};
 
+/* Virtual-mode placeholders.
+   Bare `/` lands the user in couchlist mode with a blank list and no DB
+   identity. We show editable defaults — "CouchM8#NNNNNN" for the user tab,
+   "Couch#NNNNNN" for the couch tab — and only persist anything (visitor
+   row, list row, list nickname) when the user does something concrete (adds
+   a movie, types a name, etc.). The names are kept in localStorage so a
+   refresh during this virtual state shows the same numbers. */
+let virtualUserName = null;        // shown on the user tab pre-materialize
+let virtualListName = null;        // shown on the couch tab pre-materialize
+let isVirtualList   = false;       // true when listId hasn't been generated/picked
+
 /* Shelf-only state — set in shelf mode, ignored in list mode.
    Per-tab checkbox selections kept in memory for the session only;
    missing tab → empty Set (default unchecked). Page refresh clears it. */
@@ -94,38 +105,85 @@ let shelfReadySnap    = null;                                      // RDY snapsh
    ============================================================================ */
 
 function initApp() {
-  const urlPath = window.location.pathname.replace(/^\//, '');
+  /* URL routing. New canonical form is query-param-based:
+       /?ListId=<8>             → couchlist for that list
+       /?UserId=<10>            → set cookie, then load that user's last list
+       /?ListId=&UserId=        → both (UserId restores identity in incognito)
+       /?Shelf=1                → shelf mode (Shelf button target)
+       /                        → couchlist mode, virtual blank list
+       /<8>                     → legacy backcompat, same as ?ListId=<8>
 
-  visitorId = getCookie('wtw_visitor');
-  if (!visitorId) {
-    visitorId = generateId(VISITOR_ID_LEN);
+     UserId is consumed once: cookie is set, then the param is stripped from
+     the URL via history.replaceState so the "secret" link isn't left visible
+     in the address bar after one use. */
+  const params = new URLSearchParams(window.location.search);
+  const userIdParam = params.get('UserId');
+  const listIdParam = params.get('ListId');
+  const shelfParam  = params.get('Shelf');
+
+  const urlPath = window.location.pathname.replace(/^\//, '');
+  const pathListId =
+    (urlPath.length === LIST_ID_LEN && /^[A-Za-z0-9]+$/.test(urlPath))
+      ? urlPath
+      : null;
+
+  /* Visitor identity */
+  if (userIdParam && /^[A-Za-z0-9]{10}$/.test(userIdParam)) {
+    visitorId = userIdParam;
     setCookie('wtw_visitor', visitorId);
+  } else {
+    visitorId = getCookie('wtw_visitor');
+    if (!visitorId) {
+      visitorId = generateId(VISITOR_ID_LEN);
+      setCookie('wtw_visitor', visitorId);
+    }
   }
 
-  /* Bare `/` lands on My Shelf; `/<8charid>` is the existing Couchlist view. */
-  if (!urlPath || urlPath === '') {
+  /* Strip UserId from URL after consuming. Keep ListId/Shelf if present. */
+  if (userIdParam) {
+    const clean = new URLSearchParams(params);
+    clean.delete('UserId');
+    const qs = clean.toString();
+    history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : ''));
+  }
+
+  /* Mode */
+  if (shelfParam === '1') {
     appMode = 'shelf';
     initShelf();
     return;
   }
 
   appMode = 'list';
-  listId = urlPath;
 
-  /* Remember this list as the visitor's "last viewed" — the My Shelf couch
-     button uses it as the fallback when no list-tab is active there. */
-  try { localStorage.setItem('wtw_last_list', listId); } catch (e) { /* private mode */ }
+  /* Pick the listId. Explicit ?ListId or path wins; otherwise we'll resolve
+     against the visitor's last_list_id (in loadVisitorProfile), or fall back
+     to virtual mode (no list, blank state). */
+  if (listIdParam && /^[A-Za-z0-9]{8}$/.test(listIdParam)) {
+    listId = listIdParam;
+  } else if (pathListId) {
+    listId = pathListId;
+  } else {
+    listId = null;                                                   // resolve below
+  }
 
   loadVisitorProfile().then(() => {
+    /* If no listId yet and we found a stored last-list for this visitor,
+       use it. Otherwise we go virtual. */
+    if (!listId && visitor && visitor.last_list_id
+        && /^[A-Za-z0-9]{8}$/.test(visitor.last_list_id)) {
+      listId = visitor.last_list_id;
+    }
+    if (!listId) {
+      enterVirtualList();
+    }
     return loadList();
   }).then(() => {
     setupEventListeners();
-    console.log('app.js BUILD myshelf-step4');
     document.title = 'CouchList';
 
-    /* pendingPaste hook: if a previous Apply redirected us here (either for
-       a URL swap or a visitor swap), run the blob now that we're on the
-       right list/visitor. applyPasteText clears the entry on success. */
+    /* pendingPaste hook: if a previous Apply redirected us here, run the
+       blob now that we're on the right list/visitor. */
     const pending = sessionStorage.getItem('pendingPaste');
     if (pending) {
       const parsed = parseBlob(pending);
@@ -134,6 +192,103 @@ function initApp() {
       }
     }
   });
+}
+
+/* Generate the placeholder Couch#NNNNNN / CouchM8#NNNNNN names and stash in
+   localStorage so a refresh keeps the same numbers. Returns nothing — sets
+   the module-level virtualUserName / virtualListName / isVirtualList flags. */
+function enterVirtualList () {
+  isVirtualList = true;
+  let n = readLocalStorage('wtw_virtual_user_name');
+  if (!n) {
+    n = 'CouchM8#' + sixDigits();
+    writeLocalStorage('wtw_virtual_user_name', n);
+  }
+  virtualUserName = n;
+
+  let l = readLocalStorage('wtw_virtual_list_name');
+  if (!l) {
+    l = 'Couch#' + sixDigits();
+    writeLocalStorage('wtw_virtual_list_name', l);
+  }
+  virtualListName = l;
+}
+
+function sixDigits () {
+  return String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+}
+
+function readLocalStorage (k) {
+  try { return localStorage.getItem(k); } catch (e) { return null; }
+}
+function writeLocalStorage (k, v) {
+  try { localStorage.setItem(k, v); } catch (e) { /* private mode */ }
+}
+function clearLocalStorage (k) {
+  try { localStorage.removeItem(k); } catch (e) { /* private mode */ }
+}
+
+/* Generate a fresh listId and switch out of virtual mode. Updates the URL
+   to ?ListId=<new> so the page is now a real, shareable list. Caller is
+   responsible for then doing whatever DB write triggered materialization. */
+function materializeList () {
+  if (!isVirtualList) return;
+  listId = generateId(LIST_ID_LEN);
+  isVirtualList = false;
+  /* Update URL but keep any existing search params (e.g. Shelf, though that
+     would have routed elsewhere — defensive). */
+  const params = new URLSearchParams(window.location.search);
+  params.set('ListId', listId);
+  history.replaceState({}, '', '/?' + params.toString());
+}
+
+/* Make sure the visitor row exists in the DB. If not, PUT it with the
+   placeholder name. Caller can pass a `nameOverride` to force-save a typed
+   name now. Idempotent — no-op when visitor is already materialized with
+   the same name. */
+async function materializeVisitor (nameOverride) {
+  const wantName = (nameOverride && nameOverride.trim())
+    || (visitor && visitor.name)
+    || virtualUserName;
+  if (!wantName) return;
+  const wantColor = (visitor && visitor.color) || randomColor();
+  const resp = await fetch(API + '/visitor/' + visitorId, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: wantName, color: wantColor })
+  });
+  visitor = await resp.json();
+  /* Once committed, drop the localStorage placeholder so future virtual
+     sessions (different cookie) get fresh numbers. */
+  clearLocalStorage('wtw_virtual_user_name');
+}
+
+/* Promote a virtual session into a real one. Called before any DB write that
+   needs a real list_id + visitor row + slot:
+     1. Create the visitor row if missing (uses virtual or supplied name).
+     2. Generate a real listId if we're still virtual; URL updates.
+     3. Join the visitor to the list (creates the list row + claims slot 1).
+     4. Save the virtual list nickname as their per-list nickname.
+   Idempotent — safe to call when already materialized. */
+async function ensureMaterialized (nameOverride) {
+  await materializeVisitor(nameOverride);
+  if (isVirtualList) materializeList();
+  await fetch(API + '/list/' + listId + '/join', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: visitorId })
+  });
+  /* Save the virtual list nickname as our nickname for this list — only the
+     first time, and only if the user hasn't already named it explicitly. */
+  if (virtualListName) {
+    await fetch(API + '/list/' + listId + '/list-name', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visitor_id: visitorId, list_name: virtualListName })
+    });
+    clearLocalStorage('wtw_virtual_list_name');
+    virtualListName = null;
+  }
 }
 
 
@@ -159,37 +314,47 @@ async function handleNameEntry(nameText) {
   if (!nameText || nameText.trim() === '') return;
   nameText = nameText.trim();
 
-  /* check if name is taken on this list */
-  const checkResp = await fetch(
-    API + '/list/' + listId + '/check-name/' + encodeURIComponent(nameText)
-    + '?visitor_id=' + visitorId
-  );
-  const checkData = await checkResp.json();
-
-  if (checkData.taken) {
-    showNameWarning('Name taken — you\'ll appear as "' + nameText + '(2)"');
-    nameText = nameText + '(2)';
+  /* On a virtual list there's no list to check against yet, and no existing
+     members. Skip the duplicate-name check. */
+  if (!isVirtualList && listId) {
+    const checkResp = await fetch(
+      API + '/list/' + listId + '/check-name/' + encodeURIComponent(nameText)
+      + '?visitor_id=' + visitorId
+    );
+    const checkData = await checkResp.json();
+    if (checkData.taken) {
+      showNameWarning('Name taken — you\'ll appear as "' + nameText + '(2)"');
+      nameText = nameText + '(2)';
+    }
   }
 
-  /* create or update our visitor profile */
-  const color = visitor ? visitor.color : randomColor();
-  const resp = await fetch(API + '/visitor/' + visitorId, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: nameText, color: color })
-  });
-  visitor = await resp.json();
-
-  /* claim a slot on this list so we can comment/rank before adding a movie,
-     and so other visitors see our tab as soon as we have a name */
-  await fetch(API + '/list/' + listId + '/join', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ visitor_id: visitorId })
-  });
+  /* materialize visitor + list + join + nickname in one shot */
+  await ensureMaterialized(nameText);
 
   hideNameWarning();
   updateSearchArea();
+  await loadList();
+}
+
+/* User edited the list nickname on the Couch tab. Same lazy materialize as
+   typing your own name — list + visitor get persisted, then the nickname
+   is saved as ours for the list. */
+async function handleListNameEntry (nameText) {
+  if (!nameText || nameText.trim() === '') return;
+  nameText = nameText.trim().slice(0, 12);
+
+  if (isVirtualList) {
+    /* User typed an explicit list name — discard the auto-generated one
+       so ensureMaterialized doesn't overwrite their choice. */
+    virtualListName = null;
+    clearLocalStorage('wtw_virtual_list_name');
+  }
+  await ensureMaterialized();
+  await fetch(API + '/list/' + listId + '/list-name', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: visitorId, list_name: nameText })
+  });
   await loadList();
 }
 
@@ -248,20 +413,32 @@ function hideNameWarning() {
    ============================================================================ */
 
 async function loadList() {
-  /* pass visitor_id so the response includes our private list nickname */
-  const resp = await fetch(API + '/list/' + listId
-    + (visitorId ? '?visitor_id=' + encodeURIComponent(visitorId) : ''));
-
-  if (!resp.ok) {
-    /* list doesn't exist yet — start with empty data */
+  /* Virtual mode: no listId, no fetch — render an empty list shell with
+     the placeholder names. Editing anything will materialize. */
+  if (isVirtualList || !listId) {
     listData = {
-      list: { id: listId },
+      list: { id: null },
       visitors: {},
       movies: [],
-      your_list_name: null
+      your_list_name: virtualListName || null
     };
   } else {
-    listData = await resp.json();
+    /* pass visitor_id so the response includes our private list nickname,
+       and so the server can record this as our last-viewed list */
+    const resp = await fetch(API + '/list/' + listId
+      + (visitorId ? '?visitor_id=' + encodeURIComponent(visitorId) : ''));
+
+    if (!resp.ok) {
+      /* list doesn't exist yet — start with empty data */
+      listData = {
+        list: { id: listId },
+        visitors: {},
+        movies: [],
+        your_list_name: null
+      };
+    } else {
+      listData = await resp.json();
+    }
   }
 
   /* figure out our slot number on this list */
@@ -282,18 +459,15 @@ async function loadList() {
   renderList();
 }
 
-/* show the search box only if the visitor has a name, otherwise show a welcome message */
+/* Show the search box unconditionally — virtual visitors can search and
+   add, which materializes them. The old "welcome msg / set name first"
+   gate was removed when we made bare `/` land in couchlist mode. */
 function updateSearchArea() {
   const searchBox = document.getElementById('search-box');
   const welcome = document.getElementById('welcome-msg');
   const colorDot = document.getElementById('my-color-dot');
-  if (visitor) {
-    searchBox.style.display = '';
-    welcome.style.display = 'none';
-  } else {
-    searchBox.style.display = 'none';
-    welcome.style.display = 'block';
-  }
+  searchBox.style.display = '';
+  if (welcome) welcome.style.display = 'none';
   /* Color dot is hidden in list mode — color management lives on the
      My Shelf "color" button. We keep the <input type=color> picker that
      it triggers around (it's a native helper for both modes). */
@@ -438,10 +612,10 @@ function renderSearchResults() {
 }
 
 async function addMovie(tmdbMovie) {
-  if (!visitor) {
-    showNameWarning('Enter your name before adding movies');
-    return;
-  }
+  /* First-add on a virtual session creates the visitor, list, slot, and
+     nickname before the POST /movies. Once we're materialized, this is a
+     no-op. */
+  await ensureMaterialized();
 
   const year = formatYear(tmdbMovie.release_date);
 
@@ -1282,28 +1456,56 @@ function renderUserTabs() {
   const tabBar = document.getElementById('tab-bar');
   let html = '';
 
-  /* Couch tab — always first. Two stacked centered lines: the visitor's
-     list nickname on top (or empty when not set), "Couch List" on bottom.
+  /* Couch tab — always first. Two stacked centered lines, BOTH at the
+     same large size now:
+       top    — list nickname (editable when this tab is active; falls back
+                to the virtual Couch#NNNNNN placeholder pre-materialize)
+       bottom — "couchlist"
      Both paint with the RDY-gradient via background-clip:text on the
-     wrapping span (the parent .tab-couch keeps its black background).
-     The "My Shelf" overlay was removed — its job is now done by the
-     dedicated my-shelf button in the search row. */
-  const myListName = (listData && listData.your_list_name) || '';
-  html += '<div class="tab tab-couch' + (activeTab === 'couch' ? ' tab-active' : '') + '" '
+     inner spans. The black fill stays on .tab-couch itself. */
+  const savedListName = (listData && listData.your_list_name) || '';
+  const placeholderListName = virtualListName || '';
+  const couchActive = (activeTab === 'couch');
+
+  let topLine;
+  if (couchActive) {
+    topLine = '<input class="tab-name-input tab-couch-name-input" type="text" '
+      + 'value="' + escapeHtml(savedListName) + '" '
+      + 'placeholder="' + escapeHtml(placeholderListName) + '" '
+      + 'autocomplete="off" maxlength="12" data-list-name-input="1">';
+  } else {
+    const shown = savedListName || placeholderListName;
+    topLine = shown
+      ? '<span class="tab-couch-text tab-couch-nickname">' + escapeHtml(shown) + '</span>'
+      : '';
+  }
+
+  html += '<div class="tab tab-couch' + (couchActive ? ' tab-active' : '') + '" '
     + 'data-tab="couch">'
     + '<div class="tab-couch-stack">'
-    +   (myListName
-        ? '<span class="tab-couch-text tab-couch-nickname">'
-            + escapeHtml(myListName) + '</span>'
-        : '')
-    +   '<span class="tab-couch-text">Couch List</span>'
+    +   topLine
+    +   '<span class="tab-couch-text">couchlist</span>'
     + '</div>'
     + '</div>';
 
-  if (!visitor) {
-    html += '<div class="tab tab-mine tab-new">'
+  /* If there's no visitor row yet, render the user's "virtual" tab with the
+     CouchM8#NNNNNN placeholder. Once any slot exists for us, the loop below
+     renders the real one instead (and we suppress this stub). */
+  const haveSlot = Object.values(listData.visitors).some(v => v.id === visitorId);
+  if (!haveSlot) {
+    const meActive = (activeTab === visitorId);
+    const meTabClasses = ['tab', 'tab-user', 'tab-mine'];
+    if (meActive) meTabClasses.push('tab-active');
+    const userColor = (visitor && visitor.color) || '#cccccc';
+    const valueText = (visitor && visitor.name) || '';
+    const placeholder = virtualUserName || 'Type your name';
+
+    html += '<div class="' + meTabClasses.join(' ') + '" data-tab="' + visitorId + '" '
+      + 'style="background:' + escapeHtml(userColor) + '">'
       + '<input id="name-input" class="tab-name-input" type="text" '
-      + 'placeholder="Type your name" autocomplete="off" maxlength="' + NAME_MAX_LEN + '">'
+      +   'value="' + escapeHtml(valueText) + '" '
+      +   'placeholder="' + escapeHtml(placeholder) + '" '
+      +   'autocomplete="off" maxlength="' + NAME_MAX_LEN + '">'
       + '</div>';
   }
 
@@ -1312,6 +1514,11 @@ function renderUserTabs() {
     const v = listData.visitors[slot];
     html += buildVisitorTab(v, v.id === visitorId);
   });
+
+  /* The "+" tab — always rightmost. Tap to open the share-link modal. */
+  html += '<div class="tab tab-plus" data-tab="plus" aria-label="Invite someone">'
+    + '<span class="tab-plus-icon">+</span>'
+    + '</div>';
 
   if (visitor) {
     html += '<input type="color" id="color-picker" value="' + escapeHtml(visitor.color) + '" '
@@ -1619,6 +1826,86 @@ function closeCopyPasteModal() {
 
 
 /* ============================================================================
+   SHARE MODAL — opened by the rightmost "+" tab.
+   ============================================================================
+   Shows two links:
+     • Invite link  — `?ListId=<id>`. Anyone who opens this URL joins the
+                      list (their existing identity, or a fresh one).
+     • Your private (incognito) link — `?ListId=<id>&UserId=<vid>`. Resumes
+                      THIS visitor's identity in any browser. Treat it like
+                      a password — anyone with it becomes you.
+   Tapping the "+" forces materialization first so we always have a real,
+   shareable URL even on a brand-new virtual session. */
+async function openShareModal () {
+  await ensureMaterialized();
+  /* loadList so the tab strip and your_list_name reflect the new state. */
+  await loadList();
+
+  const origin = window.location.origin;
+  const inviteUrl = origin + '/?ListId=' + encodeURIComponent(listId);
+  const privateUrl = origin + '/?ListId=' + encodeURIComponent(listId)
+    + '&UserId=' + encodeURIComponent(visitorId);
+
+  const modal = document.getElementById('copy-paste-modal');
+  modal.innerHTML =
+    '<div class="share-modal">'
+    + '<button class="modal-close share-modal-close" aria-label="Close">✕</button>'
+    + '<h3>Invite someone</h3>'
+    + '<p class="share-hint">Send this link to anyone you want on this list. '
+    + 'Opening it joins them automatically.</p>'
+    + '<input class="share-link" readonly value="' + escapeHtml(inviteUrl) + '">'
+    + '<button class="share-copy-btn" data-share-target="invite">Copy invite link</button>'
+
+    + '<h3 class="share-h3-2">Your private link</h3>'
+    + '<p class="share-hint">Save this for yourself — it logs you back in '
+    + 'as <strong>' + escapeHtml((visitor && visitor.name) || 'you') + '</strong> '
+    + 'in incognito or a different browser. Don\'t share it with anyone.</p>'
+    + '<input class="share-link" readonly value="' + escapeHtml(privateUrl) + '">'
+    + '<button class="share-copy-btn" data-share-target="private">Copy private link</button>'
+    + '</div>';
+
+  modal.style.display = 'block';
+
+  modal.querySelector('.share-modal-close').addEventListener('click', () => {
+    modal.style.display = 'none';
+    modal.innerHTML = '';
+  });
+  modal.querySelectorAll('.share-copy-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const target = btn.dataset.shareTarget;
+      const url = (target === 'invite') ? inviteUrl : privateUrl;
+      copyToClipboard(url);
+      btn.textContent = 'Copied!';
+      setTimeout(() => {
+        btn.textContent = (target === 'invite') ? 'Copy invite link' : 'Copy private link';
+      }, 1200);
+    });
+  });
+  modal.querySelectorAll('.share-link').forEach(inp => {
+    inp.addEventListener('focus', () => inp.select());
+  });
+}
+
+function copyToClipboard (text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+function fallbackCopy (text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch (e) { /* best effort */ }
+  document.body.removeChild(ta);
+}
+
+
+/* ============================================================================
    buildBlob(visitorById) — serialize the list as the markdown snapshot
    ============================================================================
    Only the current user's visitor ID is emitted. All other references are
@@ -1654,7 +1941,7 @@ function buildBlob(visitorById) {
   const lines = [];
   lines.push('# CouchList Snapshot');
   lines.push('');
-  lines.push('URL:       ' + window.location.origin + '/' + listId);
+  lines.push('URL:       ' + window.location.origin + '/?ListId=' + listId);
   lines.push('List ID:   ' + listId);
   lines.push('Created:   ' + (listData.list.created || '?'));
   lines.push('Snapshot:  ' + today);
@@ -1810,7 +2097,7 @@ async function applyPasteText(text) {
   /* URL handoff: different list → stash and navigate. */
   if (parsed.list_id && parsed.list_id !== listId) {
     sessionStorage.setItem('pendingPaste', text);
-    window.location.href = '/' + parsed.list_id;
+    window.location.href = '/?ListId=' + encodeURIComponent(parsed.list_id);
     return;
   }
 
@@ -2117,6 +2404,10 @@ function setupEventListeners() {
       return;
     }
 
+    /* "+" tab → share-link modal (no active-view change) */
+    const plusTab = e.target.closest('.tab-plus');
+    if (plusTab) { openShareModal(); return; }
+
     /* tab body → switch active view */
     const tab = e.target.closest('.tab');
     if (tab) handleTabClick(tab.dataset.tab);
@@ -2140,6 +2431,16 @@ function setupEventListeners() {
     if (!e.target.classList.contains('tab-name-input')) return;
     const newName = e.target.value.trim();
     if (!newName) return;
+
+    /* Couch-tab nickname input — route to the list-name save path. */
+    if (e.target.dataset.listNameInput === '1') {
+      const current = (listData && listData.your_list_name) || '';
+      if (newName === current) return;
+      handleListNameEntry(newName);
+      return;
+    }
+
+    /* otherwise: visitor name input */
     if (visitor && newName === visitor.name) return;
     handleNameEntry(newName);
   });
@@ -2240,9 +2541,18 @@ function setupEventListeners() {
      replaced by the per-mode side buttons (my-shelf in list mode, the
      couch/color/move/ALL/help cluster in shelf mode). */
   document.querySelectorAll('#search-row .action-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (btn.dataset.action === 'howto')    openHowToModal();
-      if (btn.dataset.action === 'my-shelf') window.location.href = '/';
+    btn.addEventListener('click', async () => {
+      if (btn.dataset.action === 'howto') {
+        openHowToModal();
+        return;
+      }
+      if (btn.dataset.action === 'my-shelf') {
+        /* Materialize the visitor first so the shelf has an identity to
+           render against. Tapping Shelf is a deliberate write intent — it
+           saves the virtual CouchM8#NNNNNN name if no name has been typed. */
+        await materializeVisitor();
+        window.location.href = '/?Shelf=1';
+      }
     });
   });
 }
@@ -2321,7 +2631,7 @@ function openHowToModal() {
     + '<p>Going to '
     + '<a href="https://couchlist.org/" target="_blank" rel="noopener">couchlist.org</a> '
     + 'generates a new list and URL. Invite potential couch mates to this list by '
-    + 'sending them: <strong>' + escapeHtml(window.location.host + '/' + listId) + '</strong></p>'
+    + 'sending them: <strong>' + escapeHtml(window.location.host + '/?ListId=' + listId) + '</strong></p>'
     + '</div>';
 
   showHowToModal(modal);
@@ -2448,53 +2758,20 @@ function initShelf () {
 }
 
 async function loadShelf () {
+  /* Reaching shelf without a visitor row means someone manually navigated
+     to /?Shelf=1 with a fresh cookie. Bounce them back to the couchlist
+     landing where they can engage and materialize. */
   if (!visitor) {
-    /* cookie exists but the server has no visitor row yet (no name set).
-       Render the basic "type your name" prompt — full landing card is step 8. */
-    shelfData = null;
-    renderShelfBare();
+    window.location.href = '/';
     return;
   }
   const resp = await fetch(API + '/visitor/' + visitorId + '/shelf');
   if (!resp.ok) {
-    shelfData = null;
-    renderShelfBare();
+    window.location.href = '/';
     return;
   }
   shelfData = await resp.json();
   renderShelf();
-}
-
-/* Bare shell when we don't have a named visitor yet. Two empty-input tabs
-   (name yourself / name a list); Move + Help stay available so the first-
-   time visitor can paste a visitor ID to "become" an existing user. */
-function renderShelfBare () {
-  const tabBar = document.getElementById('tab-bar');
-  tabBar.innerHTML =
-    '<div class="tab tab-mine tab-new tab-active">'
-    + '<input id="name-input" class="tab-name-input" type="text" '
-    +   'placeholder="Type your name" autocomplete="off" maxlength="' + NAME_MAX_LEN + '">'
-    + '</div>'
-    + '<div class="tab tab-new tab-shelf-newlist">'
-    + '<input id="newlist-input" class="tab-name-input" type="text" '
-    +   'placeholder="Name a new list" autocomplete="off" maxlength="12">'
-    + '</div>';
-
-  const searchBox = document.getElementById('search-box');
-  const welcome   = document.getElementById('welcome-msg');
-  if (searchBox) searchBox.style.display = 'none';
-  if (welcome)   { welcome.style.display = 'block';
-                   welcome.textContent = 'Welcome — name yourself, or start a list.'; }
-
-  /* In bare-shell, only Move (paste flow) + Help. Hide the rest. */
-  document.querySelectorAll('.action-btn.list-only').forEach(b => b.style.display = 'none');
-  document.querySelectorAll('.action-btn.shelf-only').forEach(b => {
-    if (b.dataset.action === 'manage') b.style.display = '';
-    else b.style.display = 'none';
-  });
-
-  document.getElementById('movie-list').className = '';                 /* drop shelf-mode for bare */
-  document.getElementById('movie-list').innerHTML = '';
 }
 
 function renderShelf () {
@@ -3177,7 +3454,7 @@ function setupShelfEventListeners () {
     const couchBtn = e.target.closest('.action-btn.side-btn-couch');
     if (couchBtn) {
       if (couchBtn.dataset.listLink) {
-        window.location.href = '/' + couchBtn.dataset.listLink;
+        window.location.href = '/?ListId=' + encodeURIComponent(couchBtn.dataset.listLink);
       }
       return;
     }
@@ -3287,49 +3564,13 @@ function setupShelfEventListeners () {
     refreshShelfSelectAllLabel();
   });
 
-  /* Name entry on the bare shell + list nickname commit on Enter/blur. */
+  /* Shelf list-tab nickname Enter commits via blur (focusout listener below). */
   document.addEventListener('keydown', async (e) => {
-    if (e.target && e.target.id === 'name-input' && e.key === 'Enter') {
-      const text = e.target.value.trim();
-      if (!text) return;
-      const color = randomColor();
-      const resp = await fetch(API + '/visitor/' + visitorId, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: text, color })
-      });
-      visitor = await resp.json();
-      await loadShelf();
-    }
     if (e.target && e.target.classList
         && e.target.classList.contains('shelf-list-name-input')
         && e.key === 'Enter') {
       e.preventDefault();
       e.target.blur();                                              /* triggers focusout commit */
-    }
-    /* First-time landing: typing a list name + Enter creates a new list,
-       joins, sets nickname. Visitor must have a name set first (otherwise
-       the prompt is to name themselves). */
-    if (e.target && e.target.id === 'newlist-input' && e.key === 'Enter') {
-      const text = (e.target.value || '').trim();
-      if (!text) return;
-      if (!visitor) {
-        alert('Type your name first (left tab).');
-        return;
-      }
-      const newListId = generateId(LIST_ID_LEN);
-      await fetch(API + '/list/' + newListId + '/join', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ visitor_id: visitorId })
-      });
-      await fetch(API + '/list/' + newListId + '/list-name', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ visitor_id: visitorId, list_name: text })
-      });
-      activeTab = newListId;
-      await loadShelf();
     }
   });
 

@@ -189,6 +189,13 @@ try {
   db.exec('ALTER TABLE user_movies ADD COLUMN note TEXT');
 } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
 
+/* Last list this visitor opened. Set whenever they hit GET /api/list/:id?
+   visitor_id=…; used to land bare /couchlist.org back on the list they
+   were last looking at when they revisit (cookie or ?UserId= path). */
+try {
+  db.exec('ALTER TABLE visitors ADD COLUMN last_list_id TEXT');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
 
 /* Bootstrap user_movies from existing per-list rankings.
 
@@ -568,7 +575,9 @@ app.use(express.static(path.join(__dirname, 'public'), {
    ============================================================================ */
 
 app.get('/api/visitor/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM visitors WHERE id = ?').get(req.params.id);
+  const row = db.prepare(
+    'SELECT id, name, color, last_list_id FROM visitors WHERE id = ?'
+  ).get(req.params.id);
   if (!row) return res.status(404).json({ error: 'visitor not found' });
   res.json(row);
 });
@@ -593,8 +602,14 @@ app.put('/api/visitor/:id', (req, res) => {
     }
   }
 
-  db.prepare('INSERT OR REPLACE INTO visitors (id, name, color) VALUES (?, ?, ?)')
-    .run(req.params.id, name, color);
+  /* UPSERT preserves last_list_id (and any other future columns). INSERT OR
+     REPLACE would delete-and-recreate the row, nulling out columns we didn't
+     pass — fine when only (id,name,color) existed, harmful now that
+     last_list_id rides on this row. */
+  db.prepare(
+    'INSERT INTO visitors (id, name, color) VALUES (?, ?, ?) '
+    + 'ON CONFLICT(id) DO UPDATE SET name = excluded.name, color = excluded.color'
+  ).run(req.params.id, name, color);
   res.json({ id: req.params.id, name, color });
 });
 
@@ -1145,6 +1160,14 @@ app.get('/api/list/:id', (req, res) => {
       yourListName = s.list_name || null;
     }
   });
+
+  /* Track this list as the requester's last-viewed (used to restore them on
+     bare /couchlist.org). Only update if the visitor row already exists —
+     don't auto-create one here, since GET /list is hit before names are set. */
+  if (requesterId) {
+    db.prepare('UPDATE visitors SET last_list_id = ? WHERE id = ?')
+      .run(listId, requesterId);
+  }
 
   res.json({ list, visitors, movies, your_list_name: yourListName });
 });

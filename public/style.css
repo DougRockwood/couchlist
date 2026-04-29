@@ -324,7 +324,11 @@ html, body {
 
 .tab-couch-nickname {
   /* Doug's redesign: list-name on top is the SAME size as "couchlist"
-     below it — both are the big stacked label. */
+     below it — both are the big stacked label. The list name stays solid
+     white (overrides the inherited tab-couch-text gradient clip), so it
+     reads cleanly on the black tab even when an RDY user picks a dark
+     color that would otherwise drag the gradient toward black. The brand
+     "couchlist" word below keeps the gradient. */
   font-weight: 600;
   letter-spacing: 0.3px;
   margin-bottom: 2px;
@@ -332,11 +336,15 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  background: none;
+  color: #ffffff;
+  -webkit-text-fill-color: #ffffff;
 }
 
-/* Editable input on the active Couch tab. Size, weight, gradient text — all
-   match the rest of the Couch tab. Letting it shrink to content keeps the
-   tab from ballooning when empty. */
+/* Editable input on the active Couch tab. Solid white to match the
+   nickname span — the gradient-clip trick was making the input invisible
+   when an RDY user's color dragged the gradient toward black. Letting it
+   shrink to content keeps the tab from ballooning when empty. */
 .tab-couch-name-input {
   display: inline-block;
   background: transparent;
@@ -346,11 +354,8 @@ html, body {
   font-weight: 600;
   letter-spacing: 0.3px;
   text-align: center;
-  background: var(--rdy-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
+  color: #ffffff;
+  -webkit-text-fill-color: #ffffff;
   caret-color: #ffffff;
   field-sizing: content;
   width: auto;
@@ -360,17 +365,12 @@ html, body {
   margin-bottom: 2px;
 }
 .tab-couch-name-input::placeholder {
-  /* Lower the gradient saturation a hair so the placeholder reads as hint,
-     not value. Webkit needs both fill-color and clipped color to play nice
-     with placeholder rendering. */
   -webkit-text-fill-color: rgba(255, 255, 255, 0.45);
   color: rgba(255, 255, 255, 0.45);
 }
 .tab-couch-name-input:focus {
-  background: rgba(255,255,255,0.12);
+  background: rgba(255, 255, 255, 0.12);
   border-radius: 6px;
-  -webkit-text-fill-color: #ffffff;
-  color: #ffffff;
 }
 
 /* "+" tab — always rightmost. Tap to open the share-link modal.

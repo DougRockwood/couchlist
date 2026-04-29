@@ -23,7 +23,7 @@
 
    VIRTUAL IDENTITY (list mode only):
    Bare `/` doesn't generate or fetch anything. We show editable placeholders
-   — Couch#NNNNNN on the Couch tab and CouchM8#NNN on the user tab — and
+   — Couch#NNN on the Couch tab and CouchM8#NNN on the user tab — and
    only persist anything (visitor row, list row, slot, nickname) when the
    user does something concrete. ensureMaterialized() in SECTION 4 is the
    one-stop "promote this virtual session to a real one" call site.
@@ -89,7 +89,7 @@ let displayNames      = {};
 /* Virtual-mode placeholders.
    Bare `/` lands the user in couchlist mode with a blank list and no DB
    identity. We show editable defaults — "CouchM8#NNN" for the user tab,
-   "Couch#NNNNNN" for the couch tab — and only persist anything (visitor
+   "Couch#NNN" for the couch tab — and only persist anything (visitor
    row, list row, list nickname) when the user does something concrete (adds
    a movie, types a name, etc.). The names are kept in localStorage so a
    refresh during this virtual state shows the same numbers. */
@@ -124,7 +124,7 @@ let shelfReadySnap    = null;
      3. If ?Shelf=1 → hand off to SECTION 16 (initShelf).
      4. Else, list mode: pick listId from the URL, or fall back to the
         visitor's last_list_id, or enter virtual mode (no listId; show
-        editable Couch#NNNNNN / CouchM8#NNN placeholders).
+        editable Couch#NNN / CouchM8#NNN placeholders).
      5. loadList() renders, setupEventListeners() wires interactions.
 
    Materialization helpers below initApp turn a virtual session into a real
@@ -221,7 +221,7 @@ function initApp() {
   });
 }
 
-/* Generate the placeholder Couch#NNNNNN / CouchM8#NNN names and stash in
+/* Generate the placeholder Couch#NNN / CouchM8#NNN names and stash in
    localStorage so a refresh keeps the same numbers. Returns nothing — sets
    the module-level virtualUserName / virtualListName / isVirtualList flags. */
 function enterVirtualList () {
@@ -235,14 +235,10 @@ function enterVirtualList () {
 
   let l = readLocalStorage('wtw_virtual_list_name');
   if (!l) {
-    l = 'Couch#' + sixDigits();
+    l = 'Couch#' + threeDigits();
     writeLocalStorage('wtw_virtual_list_name', l);
   }
   virtualListName = l;
-}
-
-function sixDigits () {
-  return String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
 }
 
 function threeDigits () {
@@ -1492,7 +1488,7 @@ function findCommentText(movieId, vid) {
      at the same big size: list nickname on top, "couchlist" on bottom. When
      the Couch tab is active the top line becomes an editable input —
      focusout commits via handleListNameEntry. Pre-materialize the input
-     placeholder is the virtual Couch#NNNNNN.
+     placeholder is the virtual Couch#NNN.
    - Stub user tab — only rendered when we have no slot on the list yet
      (virtual session, or a real list we haven't joined). Shows the virtual
      CouchM8#NNN placeholder; typing commits via handleNameEntry.
@@ -1513,7 +1509,7 @@ function renderUserTabs() {
   /* Couch tab — always first. Two stacked centered lines, BOTH at the
      same large size now:
        top    — list nickname (editable when this tab is active; falls back
-                to the virtual Couch#NNNNNN placeholder pre-materialize)
+                to the virtual Couch#NNN placeholder pre-materialize)
        bottom — "couchlist"
      Both paint with the RDY-gradient via background-clip:text on the
      inner spans. The black fill stays on .tab-couch itself. */

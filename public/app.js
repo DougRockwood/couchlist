@@ -2978,12 +2978,24 @@ function renderShelfTabs () {
     : false;
 
   /* "My Shelf" tab — leftmost, doublewide (mirrors the Couchlist tab in
-     list mode). User-color bg, no RDY pip (no ready state). */
+     list mode). User-color bg, no RDY pip. Two stacked lines: the user's
+     own name on top with a non-editable "'s" suffix (so it reads
+     "Doug's"), and "Shelf" centered below. The username input commits on
+     focusout / Enter via the listener in setupShelfEventListeners. */
   const userBg = v.color ? ('background:' + escapeHtml(v.color) + ';') : '';
+  const userName = v.name || '';
   let html = '<div class="tab tab-user tab-shelf-myshelf tab-mine'
     + (activeTab === 'me' ? ' tab-active' : '')
     + '" data-shelf-tab="me" style="' + userBg + '">'
-    + '<span class="tab-name">My Shelf</span>'
+    + '<div class="tab-shelf-myshelf-stack">'
+    +   '<span class="tab-shelf-myshelf-name-row">'
+    +     '<input class="tab-name-input shelf-username-input" type="text" '
+    +       'value="' + escapeHtml(userName) + '" '
+    +       'autocomplete="off" maxlength="' + NAME_MAX_LEN + '">'
+    +     '<span class="tab-shelf-myshelf-suffix">’s</span>'
+    +   '</span>'
+    +   '<span class="tab-shelf-myshelf-label">Shelf</span>'
+    + '</div>'
     + '</div>';
 
   /* "All" tab — derived RDY state = "every visible list-tab (incl. solo
@@ -3089,6 +3101,21 @@ async function commitShelfListName (listId, newName) {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ visitor_id: visitorId, list_name: newName })
+  });
+  await loadShelf();
+}
+
+/* My Shelf tab username commit. PUT /api/visitor/:id is the same endpoint
+   handleColorChange uses; we round-trip name + the visitor's existing
+   color so the server's UPDATE doesn't blank one when we set the other. */
+async function commitShelfUserName (newName) {
+  if (!visitor) return;
+  visitor.name = newName;
+  if (shelfData && shelfData.visitor) shelfData.visitor.name = newName;
+  await fetch(API + '/visitor/' + visitorId, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: newName, color: visitor.color })
   });
   await loadShelf();
 }
@@ -3633,26 +3660,42 @@ function setupShelfEventListeners () {
     refreshShelfSelectAllLabel();
   });
 
-  /* Shelf list-tab nickname Enter commits via blur (focusout listener below). */
+  /* Enter commits via blur for both the list-tab nickname input and the
+     My Shelf tab username input (focusout listener below handles both). */
   document.addEventListener('keydown', async (e) => {
-    if (e.target && e.target.classList
-        && e.target.classList.contains('shelf-list-name-input')
+    if (!e.target || !e.target.classList) return;
+    if ((e.target.classList.contains('shelf-list-name-input')
+         || e.target.classList.contains('shelf-username-input'))
         && e.key === 'Enter') {
       e.preventDefault();
       e.target.blur();                                              /* triggers focusout commit */
     }
   });
 
-  /* commit the list-nickname input when the user moves focus away. */
+  /* commit the list-nickname / username inputs when the user moves focus
+     away. Both routes: bail if value unchanged or empty. */
   document.addEventListener('focusout', async (e) => {
-    if (e.target && e.target.classList
-        && e.target.classList.contains('shelf-list-name-input')) {
+    if (!e.target || !e.target.classList) return;
+
+    if (e.target.classList.contains('shelf-list-name-input')) {
       const listId = e.target.dataset.listId;
       const newName = (e.target.value || '').trim();
       const lst = shelfData && shelfData.lists.find(l => l.id === listId);
       const oldName = lst ? (lst.list_name || '') : '';
       if (newName === oldName) return;                              /* no-op */
       await commitShelfListName(listId, newName);
+      return;
+    }
+
+    if (e.target.classList.contains('shelf-username-input')) {
+      const newName = (e.target.value || '').trim().slice(0, NAME_MAX_LEN);
+      const oldName = (shelfData && shelfData.visitor && shelfData.visitor.name) || '';
+      if (!newName || newName === oldName) {
+        /* Revert displayed value if user blanked it — visitor must always have a name. */
+        e.target.value = oldName;
+        return;
+      }
+      await commitShelfUserName(newName);
       return;
     }
   });

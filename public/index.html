@@ -39,7 +39,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>What Do You Wanna Watch?</title>
-  <link rel="stylesheet" href="style.css?v=myshelfv5">
+  <link rel="stylesheet" href="style.css?v=myshelfv24">
 </head>
 <body>
 
@@ -80,12 +80,21 @@
 
       <div id="search-area">
         <div id="search-row">
+          <!-- LEFT-side button: list mode = "my shelf" (→ /); shelf mode = "couch"
+               (→ active list's couchlist URL). Hidden in the other mode. -->
+          <div class="action-btn list-only side-btn-myshelf" data-action="my-shelf" style="display:none">My Shelf</div>
+          <div class="action-btn shelf-only side-btn-couch" data-action="couch" style="display:none">Couch</div>
+
           <input type="text" id="search-box" placeholder="Add a movie..." autocomplete="off">
           <div id="welcome-msg" style="display:none">Welcome! Enter a name to add or rank movies.</div>
+
+          <!-- color picker dot is now a hidden helper — color button (shelf) drives it -->
           <span id="my-color-dot" title="Pick your color" style="display:none"></span>
-          <div class="action-btn" data-action="info">INFO</div>
-          <div class="action-btn shelf-only" data-action="select-all" style="display:none">ALL</div>
-          <div class="action-btn shelf-only" data-action="manage" style="display:none">Manage</div>
+
+          <!-- Right-side buttons. INFO is gone from both modes. -->
+          <div class="action-btn shelf-only side-btn-color" data-action="color" style="display:none">Color</div>
+          <div class="action-btn shelf-only" data-action="manage" style="display:none">Move</div>
+          <div class="action-btn shelf-only" data-action="select-all" style="display:none">All</div>
           <div class="action-btn" data-action="howto">Help</div>
         </div>
         <div id="search-results"></div>
@@ -153,7 +162,7 @@
        the URL, checks the cookie, fetches data, and renders everything.
        ================================================================== -->
 
-  <script src="app.js?v=myshelfv5"></script>
+  <script src="app.js?v=myshelfv24"></script>
 
 </body>
 </html>

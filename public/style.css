@@ -162,6 +162,12 @@ html, body {
 
 .action-btn:hover { background: #f0f0ff; }
 
+/* Landscape (desktop / rotated phone): shrink the search-row buttons from
+   10% to 3% so they line up with the slimmer rank/grab/check/X columns. */
+@media (orientation: landscape) {
+  .action-btn { flex: 0 0 3%; }
+}
+
 /* Visitor's own color picker, sitting in the search row between the
    search box and the INFO button. Click opens the native color picker. */
 #my-color-dot {
@@ -269,10 +275,11 @@ html, body {
   width: max-content;
 }
 
-/* Shared tab base. Concrete tab variants below set their own display/grid. */
+/* Shared tab base. Concrete tab variants below set their own display/grid.
+   Restored to main-branch geometry (68px tall, variable width, 14px text). */
 .tab {
-  height: 68px;                       /* 2x the old 34px — fills more vertical space */
-  border-radius: 15px;                /* circle radius (14) + border (1) */
+  height: 68px;
+  border-radius: 15px;
   padding: 3px;
   cursor: pointer;
   user-select: none;
@@ -282,19 +289,16 @@ html, body {
   color: #333;
 }
 
-/* Couch tab: big label centered. Min-width = height keeps the smallest
-   form square; the big font usually pushes it wider. The Couch tab is
-   the only site element with a black background — its inner .tab-couch-text
-   span paints the label using the RDY-gradient via background-clip: text.
-   We can't put the gradient on .tab-couch itself because background-clip:
-   text would hide the black fill too — so the black lives on the parent
-   and the gradient lives on the child span. */
+/* Couch tab: big label centered. Two stacked centered lines (nickname on
+   top + "Couch List" on bottom), both painted with the RDY-gradient via
+   background-clip:text on the inner spans. The gradient can't live on
+   .tab-couch itself — that'd hide the black fill — so the black lives on
+   the parent and the gradient on the child span. */
 .tab-couch {
-  position: relative;                  /* anchor for My Shelf absolute overlay */
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 136px;                    /* ≈ 2× a 68px square user tab */
+  min-width: 68px;
   padding: 0 8px;
   font-size: 22px;
   font-weight: 600;
@@ -302,7 +306,6 @@ html, body {
   background: #000000;
 }
 
-/* Two-line stack: nickname on top (small), "Couch List" on bottom (big). */
 .tab-couch-stack {
   display: flex;
   flex-direction: column;
@@ -328,34 +331,6 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* My Shelf overlay — covers the right half of the Couch tab. Background
-   and text color are computed in JS (tintColor / darkenColor) from the
-   visitor's color so a "very dark version of your color" reads cleanly
-   on a "white but tinted your color" panel, regardless of hue. */
-.tab-myshelf-overlay {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 50%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  border-radius: 0 15px 15px 0;        /* match parent right-side rounding */
-  text-decoration: none;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  line-height: 1.05;
-  box-shadow: -1px 0 0 rgba(0,0,0,0.15);
-}
-.tab-myshelf-overlay .tab-myshelf-line {
-  font-size: 14px;
-}
-.tab-myshelf-overlay:hover {
-  filter: brightness(1.04);
 }
 
 /* Visitor tab: 3-column / 2-row grid. Row 1 has the dots at the outer
@@ -529,6 +504,16 @@ html, body {
     minmax(0, 30fr)  minmax(0, 37.5fr) minmax(0, 7.5fr);
 }
 
+/* Shelf mode (My Shelf page) uses a 7-column grid:
+     rank 7.5  grab 7.5  poster 10  title 30  note 25  check 10  X 10
+   Poster column is a percentage (10fr) — its image scales to width and the
+   row height follows the poster's natural aspect (138/92 ≈ 1.5×).        */
+#movie-list.shelf-mode {
+  grid-template-columns:
+    minmax(0, 7.5fr) minmax(0, 7.5fr) minmax(0, 10fr)
+    minmax(0, 30fr)  minmax(0, 25fr)  minmax(0, 10fr) minmax(0, 10fr);
+}
+
 /* Landscape (width > height): desktop and rotated phones. Title + comments
    get the lion's share; grab/rank/X shrink to thin gutters. Poster column
    still follows --poster-width. */
@@ -537,6 +522,16 @@ html, body {
     grid-template-columns:
       minmax(0, 2fr) minmax(0, 2fr) var(--poster-width, 60px)
       minmax(0, 30fr) minmax(0, 61fr) minmax(0, 2fr);
+  }
+  /* Shelf mode in landscape: collapse rank/grab/poster/check/X gutters and
+     give the freed width to the note column — same shape as the couchlist
+     landscape rule, where rank/grab/X drop to 2fr and comments fattens to
+     61fr. Search-row buttons drop to 3% in landscape (see .action-btn
+     media rule) so the checkbox/X columns line up under ALL/NONE / help. */
+  #movie-list.shelf-mode {
+    grid-template-columns:
+      minmax(0, 2fr)  minmax(0, 2fr)  minmax(0, 3fr)
+      minmax(0, 30fr) minmax(0, 57fr) minmax(0, 3fr) minmax(0, 3fr);
   }
 }
 
@@ -1132,6 +1127,76 @@ html, body {
 
 .howto-modal .howto-newlist a { color: #1976d2; }
 
+/* Shelf-mode help-modal inline demos. Each .howto-mini is a small bordered
+   box that wraps a parenthesized label (e.g. "(My Shelf)", "(Move)") and
+   mirrors the corresponding tab/button colors. Text stays at the modal's
+   paragraph size so the box "just barely fits" the label. */
+.howto-modal .howto-mini {
+  display: inline-block;
+  vertical-align: baseline;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-size: inherit;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0 1px;
+  text-shadow: none;
+  white-space: nowrap;
+}
+
+/* My Shelf tab — user-color bg, white label (matches .tab-shelf-myshelf).
+   The bg color is set inline by JS from shelfData.visitor.color. */
+.howto-modal .howto-mini-myshelf {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+}
+
+/* All tab — black bg, white label (matches .tab-shelf-all). */
+.howto-modal .howto-mini-all {
+  background: #000;
+  color: #fff;
+  border-color: #000;
+}
+
+/* Solo tab — white bg, user-color border + label (matches .tab-shelf-solo).
+   Border + text colors are set inline by JS from the visitor color. */
+.howto-modal .howto-mini-solo {
+  background: #fff;
+}
+
+/* Rdy / Naw pip — green/red bg, white label (matches .tab-ready-btn). */
+.howto-modal .howto-mini-rdy {
+  background: #2a9d3f;
+  color: #fff;
+  border-color: rgba(0,0,0,0.25);
+}
+.howto-modal .howto-mini-naw {
+  background: #c0392b;
+  color: #fff;
+  border-color: rgba(0,0,0,0.25);
+}
+
+/* Action-button mini demos — white bg + colored border/label, matching
+   the search-row .action-btn family in shelf mode. */
+.howto-modal .howto-mini-action {
+  background: #fff;
+}
+.howto-modal .howto-mini-move,
+.howto-modal .howto-mini-allbtn {
+  color: #0000ee;
+  border-color: #0000ee;
+}
+.howto-modal .howto-mini-color {
+  font-weight: 700;
+  /* color + border-color set inline by JS to the visitor color. */
+}
+.howto-modal .howto-mini-couch {
+  color: #000;
+  border-color: #000;
+  font-weight: 700;
+}
+
 
 /* ============================================================================
    SECTION 9: COMMENT EXPAND
@@ -1263,7 +1328,12 @@ html, body {
 
 
 /* ============================================================================
-   MY SHELF (step 4) — minimal additions; shelf entries reuse the .entry grid
+   MY SHELF (v6) — full tab styles + entry layout
+   ============================================================================
+   Square 56×56 tabs (inherited from .tab) for every variant: All / My Shelf /
+   Solo / list. They reuse the tab-user 3-col-2-row grid (24/1fr/24, 24/1fr)
+   so the RDY pip lives top-right and the label lives at the bottom centered.
+   Background, text color, and presence of RDY differ per variant.
    ============================================================================ */
 
 .shelf-empty {
@@ -1275,75 +1345,162 @@ html, body {
   line-height: 1.4;
 }
 
-.shelf-checkbox-cell {
-  /* placeholder cell where comments live in list mode; populated in step 6 */
+/* "All" tab — black bg, "All" centered at bottom, RDY top-right (its
+   click bulk-fans-out across every list-tab). */
+.tab-shelf-all {
+  background: #000000;
+  color: #ffffff;
+  text-shadow: none;
+}
+.tab-shelf-all .tab-name { color: #ffffff; font-weight: 600; }
+
+/* "My Shelf" tab — user's color background, "my shelf" centered at bottom,
+   NO RDY pip (it has no ready state). Doublewide so it mirrors the Couchlist
+   tab on the list-mode page. */
+.tab-shelf-myshelf {
+  min-width: 136px;
+}
+/* No dot/RDY in this tab — let the label span both grid rows so it's centered
+   vertically across the full tab height instead of sitting in the bottom row. */
+.tab-shelf-myshelf .tab-name {
+  color: #ffffff;
+  grid-row: 1 / 3;
+  align-self: center;
+  font-size: 15.4px;                  /* +10% over the default 14px */
 }
 
-/* List tabs in shelf mode (step 5) — black background with the list nickname.
-   Step 7 will change geometry + colors when we settle the visual language;
-   for now we just want them visible and clickable. */
+/* "Solo" tab — white bg, user-color border, user-color text. RDY pip
+   uses the standard green/red treatment (shared .tab-ready-btn rules). */
+.tab-shelf-solo {
+  background: #ffffff;
+  color: #222;
+  text-shadow: none;
+  border: 1px solid currentColor;     /* currentColor inherits the user color we set inline */
+}
+.tab-shelf-solo .tab-name { color: inherit; font-weight: 600; }
+
+/* List tabs in shelf mode — gradient bg (built from the list's member colors
+   as `--list-gradient` inline), name centered at bottom in black. */
 .tab-shelf-list {
-  background: #1a1a1a;
-  color: #fff;
+  background: var(--list-gradient, linear-gradient(90deg, #ffffff, #ffffff));
+  color: #000000;
+  text-shadow: none;
 }
 .tab-shelf-list .tab-name {
-  color: #fff;
+  color: #000000;
+  font-weight: 700;
 }
-.tab-shelf-list.tab-active {
-  outline: 2px solid #1a1a1a;
-  outline-offset: -1px;
-}
-.tab-shelf-list.tab-dimmed {
-  opacity: 0.55;                       /* NAW state — still legible */
-}
+.tab-shelf-list.tab-dimmed { opacity: 0.55; }
 
-/* Inline editor on an active list-tab — looks like the existing tab-name span
-   so the visual doesn't shift on tap. White text, transparent background. */
+/* Inline editor on an active list-tab — sits where the .tab-name span would. */
 .shelf-list-name-input {
   field-sizing: content;
+  grid-column: 1 / 4;
+  grid-row: 2;
+  width: auto;
   min-width: 4ch;
   max-width: 100%;
   background: transparent;
   border: none;
   outline: none;
-  color: #fff;
+  color: #000000;
   font: inherit;
+  font-size: 14px;
   text-align: center;
   padding: 0 4px;
+  text-shadow: none;
 }
 .shelf-list-name-input::placeholder {
-  color: rgba(255,255,255,0.55);
-  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: rgba(0,0,0,0.55);
   font-size: 12px;
 }
 .shelf-list-name-input:focus {
-  background: rgba(255,255,255,0.12);
-  border-radius: 6px;
+  background: rgba(0,0,0,0.12);
+  border-radius: 4px;
 }
 
-/* "couchlist" sidebutton attached to the right of an active list-tab. */
-.tab-shelf-listlink {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 68px;
-  padding: 0 10px;
-  background: #1a1a1a;
-  color: #fff;
-  text-decoration: none;
-  border-radius: 0 12px 12px 0;        /* attached-on-right look */
-  margin-left: -6px;                   /* swallow the tab-bar gap so it's literally attached */
+/* Search-row side buttons — colored variants. */
+.side-btn-myshelf {
+  /* user-color tinted bg + darkened user color for text/outline. Concrete
+     colors are set inline by JS so the variant stays in sync with the
+     visitor's chosen color. Saturated more than the old My Shelf overlay. */
+  font-weight: 700;
+}
+.side-btn-couch {
+  color: #000000;
+  border-color: #000000;
+  font-weight: 700;
+}
+.side-btn-color {
+  font-weight: 700;
+  /* color + border-color set inline by JS to user color */
+}
+
+/* Shelf entry — leverages the 7-col shelf-mode grid above. Note column
+   sits where comments live in list mode; the checkbox + X get their own
+   columns so they line up under ALL/help in the search row. */
+.shelf-entry .entry-comments {
+  /* Note column: textarea-like single field per movie, ~3 lines tall. */
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 4px 4px;
+  min-width: 0;
+}
+/* Click-to-expand note box — same vibe as .comment-box (small, ellipsized,
+   pointer cursor). The expand state is .shelf-note-expanded below. */
+.shelf-note-box {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-family: inherit;
   font-size: 12px;
-  letter-spacing: 0.4px;
-  font-weight: 600;
-  flex-shrink: 0;
+  line-height: 1.25;
+  color: #222;
+  background: #fafafa;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.tab-shelf-listlink:hover {
-  background: #333;
+.shelf-note-box.shelf-note-empty {
+  color: #aaa;
+  font-style: italic;
 }
 
-/* Step 6 — checkbox column on shelf entries (replaces .shelf-checkbox-cell
-   placeholder). Centered checkbox in the cell, generous touch target. */
+/* Modal-sized popup for editing the note. Same machinery as .comment-expanded
+   (modal CSS vars, viewport tracking) but taller — notes are longer than
+   comments by design. */
+.shelf-note-expanded {
+  position: fixed;
+  top:   var(--modal-top,   8vh);
+  left:  var(--modal-left,  10vw);
+  width: var(--modal-width, 80vw);
+  max-width: none;
+  height: auto;
+  min-height: 60vh;
+  max-height: 85vh;
+  white-space: normal;
+  overflow-y: auto;
+  z-index: 200;
+  background: #ffffff;
+  border: 2px solid #e94560;
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  cursor: default;
+  font-size: 16px;
+  color: #222;
+}
+.shelf-note-edit {
+  flex: 1;
+  min-height: 40vh;
+}
+
 .shelf-checkbox-cell {
   display: flex;
   align-items: center;
@@ -1355,12 +1512,11 @@ html, body {
   cursor: pointer;
 }
 
-/* Manage modal (step 6) — single-column layout, mobile-friendly. */
+/* Move modal — 3-column layout: blob (left, editable) | aligned action
+   buttons (middle) | dest checkboxes (right). Width inherited from
+   .modal-content (80vw, set via applyViewportLayout). On narrow screens
+   the grid collapses to a single stacked column. */
 .shelf-manage-modal {
-  width: 92vw;
-  max-width: 600px;
-  left: 4vw;
-  top: 4vh;
   max-height: 92vh;
   overflow-y: auto;
 }
@@ -1369,8 +1525,18 @@ html, body {
   margin: 0 0 12px 0;
   color: #1a1a1a;
 }
-.manage-section {
-  margin-bottom: 16px;
+.manage-grid {
+  display: grid;
+  grid-template-columns: 1fr 220px 220px;
+  gap: 14px;
+  align-items: stretch;
+}
+.manage-col {
+  min-width: 0;
+}
+.manage-col-buttons {
+  position: relative;
+  min-height: 240px;
 }
 .manage-section-header {
   display: flex;
@@ -1385,21 +1551,39 @@ html, body {
   display: block;
   margin-bottom: 4px;
 }
-#manage-blob,
-#manage-apply-input {
+#manage-blob {
   width: 100%;
-  min-height: 120px;
+  height: 100%;
+  min-height: 320px;
   padding: 8px 10px;
   font-size: 12px;
+  line-height: 1.45;
   border: 1px solid #bbb;
   border-radius: 6px;
   font-family: ui-monospace, Menlo, Consolas, monospace;
   background: #fafafa;
   color: #222;
   resize: vertical;
+  white-space: pre;
+  overflow: auto;
 }
-#manage-blob {
-  background: #f3f3f3;
+.manage-col-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  background: #e94560;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: center;
+}
+.manage-col-btn:hover { background: #d2334d; }
+.manage-col-buttons > .manage-col-btn + .manage-col-btn {
+  /* fallback spacing when buttons are NOT absolutely positioned (mobile) */
+  margin-top: 8px;
 }
 .manage-dest-row {
   display: flex;
@@ -1418,34 +1602,6 @@ html, body {
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 11px;
 }
-.manage-add-row {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-.manage-add-row input {
-  flex: 1;
-  padding: 6px 8px;
-  font-size: 13px;
-  border: 1px solid #bbb;
-  border-radius: 6px;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-}
-.manage-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.manage-actions button {
-  padding: 10px 14px;
-  background: #e94560;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-}
-.manage-actions button:hover { background: #d2334d; }
 .manage-mini-btn {
   padding: 4px 10px;
   background: #1a1a1a;
@@ -1459,6 +1615,21 @@ html, body {
   font-size: 11px;
   color: #777;
   margin-top: 4px;
+}
+
+/* Mobile / narrow viewport — stack the three columns vertically and let
+   the buttons flow normally (alignManageButtons() detects this and clears
+   absolute positioning). */
+@media (max-width: 720px) {
+  .manage-grid {
+    grid-template-columns: 1fr;
+  }
+  .manage-col-buttons {
+    min-height: 0;
+  }
+  #manage-blob {
+    min-height: 200px;
+  }
 }
 
 /* First-time landing: secondary "Name a new list" tab next to "Type your

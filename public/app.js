@@ -72,11 +72,13 @@ let movieDetailCache  = {};
 let displayNames      = {};
 
 /* Shelf-only state — set in shelf mode, ignored in list mode.
-   `shelfSelected === null` means "uninitialized for the current tab" —
-   the renderer fills it with everything checked on first render. The user
-   explicitly unchecking all leaves it as an empty Set, NOT null, so we
-   don't auto-recheck behind their back. */
-let shelfSelected     = null;
+   Per-tab checkbox selections kept in memory for the session only;
+   missing tab → empty Set (default unchecked). Page refresh clears it. */
+let shelfSelectedByTab = new Map();
+function shelfSelected () {
+  if (!shelfSelectedByTab.has(activeTab)) shelfSelectedByTab.set(activeTab, new Set());
+  return shelfSelectedByTab.get(activeTab);
+}
 let shelfManageOpen   = false;                                     // is the Manage modal up?
 let shelfReadySnap    = null;                                      // RDY snapshot taken at modal-open
 
@@ -109,6 +111,10 @@ function initApp() {
 
   appMode = 'list';
   listId = urlPath;
+
+  /* Remember this list as the visitor's "last viewed" — the My Shelf couch
+     button uses it as the fallback when no list-tab is active there. */
+  try { localStorage.setItem('wtw_last_list', listId); } catch (e) { /* private mode */ }
 
   loadVisitorProfile().then(() => {
     return loadList();
@@ -284,14 +290,35 @@ function updateSearchArea() {
   if (visitor) {
     searchBox.style.display = '';
     welcome.style.display = 'none';
-    if (colorDot) {
-      colorDot.style.display = '';
-      colorDot.style.background = visitor.color;
-    }
   } else {
     searchBox.style.display = 'none';
     welcome.style.display = 'block';
-    if (colorDot) colorDot.style.display = 'none';
+  }
+  /* Color dot is hidden in list mode — color management lives on the
+     My Shelf "color" button. We keep the <input type=color> picker that
+     it triggers around (it's a native helper for both modes). */
+  if (colorDot) colorDot.style.display = 'none';
+
+  /* Reveal/hide the per-mode side buttons. List mode shows the my-shelf
+     button (jumps to /); shelf mode is wired separately in renderShelf. */
+  document.querySelectorAll('.action-btn.list-only').forEach(b => {
+    b.style.display = (appMode === 'list') ? '' : 'none';
+  });
+  document.querySelectorAll('.action-btn.shelf-only').forEach(b => {
+    b.style.display = (appMode === 'shelf') ? '' : 'none';
+  });
+  /* Tint the my-shelf button to the visitor's color (white-ish bg, dark
+     text/outline) so it reads as a "shortcut to your shelf". */
+  const ms = document.querySelector('.action-btn.side-btn-myshelf');
+  if (ms && visitor) {
+    ms.style.background  = tintColor(visitor.color);
+    ms.style.color       = darkenColor(visitor.color);
+    ms.style.borderColor = darkenColor(visitor.color);
+  } else if (ms) {
+    /* no visitor yet — neutral look */
+    ms.style.background = '#ffffff';
+    ms.style.color = '#0000ee';
+    ms.style.borderColor = '#0000ee';
   }
 }
 
@@ -886,10 +913,11 @@ function onDragPointerUp(e) {
   }
 
   if (appMode === 'shelf') {
-    if (activeTab === 'me') {
+    if (activeTab === 'me' || activeTab === 'all') {
+      /* All / My Shelf tabs reorder the master rank by key */
       commitShelfReorder(orderedShelfKeys);
     } else {
-      /* list-tab in shelf mode: activeTab is a list_id, entries carry per-list movie_ids */
+      /* list-tab (incl. solo) — entries carry per-list movie_ids */
       commitShelfListReorder(activeTab, orderedMovieIds);
     }
   } else {
@@ -1257,7 +1285,9 @@ function renderUserTabs() {
   /* Couch tab — always first. Two stacked centered lines: the visitor's
      list nickname on top (or empty when not set), "Couch List" on bottom.
      Both paint with the RDY-gradient via background-clip:text on the
-     wrapping span (the parent .tab-couch keeps its black background). */
+     wrapping span (the parent .tab-couch keeps its black background).
+     The "My Shelf" overlay was removed — its job is now done by the
+     dedicated my-shelf button in the search row. */
   const myListName = (listData && listData.your_list_name) || '';
   html += '<div class="tab tab-couch' + (activeTab === 'couch' ? ' tab-active' : '') + '" '
     + 'data-tab="couch">'
@@ -1268,18 +1298,6 @@ function renderUserTabs() {
         : '')
     +   '<span class="tab-couch-text">Couch List</span>'
     + '</div>'
-    /* My Shelf sub-tab overlay: only when the user's own user-tab is
-       active. Absolutely positioned over the right half of the Couch tab
-       so the left half stays tappable to switch back to Couch view. */
-    + (visitor && activeTab === visitorId
-      ? '<a class="tab-myshelf-overlay" href="/" '
-        +   'style="background:' + escapeHtml(tintColor(visitor.color))
-        +   ';color:' + escapeHtml(darkenColor(visitor.color)) + ';" '
-        +   'aria-label="My Shelf">'
-        +   '<span class="tab-myshelf-line">My</span>'
-        +   '<span class="tab-myshelf-line">Shelf</span>'
-        + '</a>'
-      : '')
     + '</div>';
 
   if (!visitor) {
@@ -1317,7 +1335,7 @@ function buildVisitorTab(v, isMe) {
   let html = '<div class="' + classes.join(' ') + '" data-tab="' + v.id + '" '
     + 'style="background:' + escapeHtml(v.color) + '">';
   html += '<span class="tab-ready-btn ' + (isSelected ? 'ready' : 'not-ready') + '">'
-    + (isSelected ? 'RDY' : 'NAW') + '</span>';
+    + (isSelected ? 'Rdy' : 'Naw') + '</span>';
   if (isMe && isActive) {
     /* Your own tab, currently active → name row becomes an editable input.
        First tap on your own tab just activates it (via the span branch
@@ -1353,7 +1371,7 @@ async function handleReadyToggle(tabVisitorId) {
     if (btn) {
       btn.classList.toggle('ready', newReady);
       btn.classList.toggle('not-ready', !newReady);
-      btn.textContent = newReady ? 'RDY' : 'NAW';
+      btn.textContent = newReady ? 'Rdy' : 'Naw';
     }
   }
 
@@ -2218,11 +2236,13 @@ function setupEventListeners() {
     }
   });
 
-  /* INFO + Help buttons in the search row — open their modals. */
+  /* Help + my-shelf side buttons in the search row. INFO is gone; it's
+     replaced by the per-mode side buttons (my-shelf in list mode, the
+     couch/color/move/ALL/help cluster in shelf mode). */
   document.querySelectorAll('#search-row .action-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      if (btn.dataset.action === 'info')  openCopyPasteModal();
-      if (btn.dataset.action === 'howto') openHowToModal();
+      if (btn.dataset.action === 'howto')    openHowToModal();
+      if (btn.dataset.action === 'my-shelf') window.location.href = '/';
     });
   });
 }
@@ -2234,10 +2254,22 @@ function setupEventListeners() {
 
 function openHowToModal() {
   const modal = document.getElementById('how-to-modal');
+
+  /* My Shelf gets its own body. The list-mode body further down stays the
+     reference doc for visitors arriving on a couchlist URL. The shared
+     show/wire-up code at the bottom of this function handles both paths;
+     the colorDot/rdyBtn queries it runs return null in shelf mode (those
+     elements aren't in the shelf body) and the if-guards skip the wire-up. */
+  if (appMode === 'shelf') {
+    renderShelfHowToBody(modal);
+    showHowToModal(modal);
+    return;
+  }
+
   const myColor = visitor ? visitor.color : '#bbb';
   const isReady = !visitor || (selectedVisitors[visitorId] !== false);
   const rdyClass = isReady ? 'ready' : 'not-ready';
-  const rdyText  = isReady ? 'RDY' : 'NAW';
+  const rdyText  = isReady ? 'Rdy' : 'Naw';
   /* Show the viewer's actual display name in the comment demo, with a
      lowercase fallback for pre-join sessions. */
   const myName = (displayNames[visitorId] || (visitor && visitor.name) || 'your_name').toLowerCase();
@@ -2268,7 +2300,7 @@ function openHowToModal() {
 
     + '<p>The <span class="tab tab-couch howto-demo-tab"><span class="tab-couch-text">Couch List</span></span> '
     + 'is the consensus (Borda method) of the '
-    + '<span class="tab-ready-btn ready howto-demo-rdy">RDY</span> people.</p>'
+    + '<span class="tab-ready-btn ready howto-demo-rdy">Rdy</span> people.</p>'
 
     + '<p><strong>Toggle</strong> '
     + '<span class="tab-ready-btn ' + rdyClass + ' howto-demo-rdy howto-demo-rdy-active" '
@@ -2292,6 +2324,13 @@ function openHowToModal() {
     + 'sending them: <strong>' + escapeHtml(window.location.host + '/' + listId) + '</strong></p>'
     + '</div>';
 
+  showHowToModal(modal);
+}
+
+/* Shared show + wire-up for both list-mode and shelf-mode help bodies.
+   The colorDot/rdyBtn queries return null in shelf mode (those elements
+   only exist in the list-mode body) and the if-guards skip the wire-up. */
+function showHowToModal(modal) {
   modal.style.display = 'block';
   const modalContent = modal.querySelector('.modal-content');
   applyViewportLayout(modalContent);
@@ -2323,9 +2362,57 @@ function openHowToModal() {
       const nowReady = selectedVisitors[visitorId] !== false;
       rdyBtn.classList.toggle('ready', nowReady);
       rdyBtn.classList.toggle('not-ready', !nowReady);
-      rdyBtn.textContent = nowReady ? 'RDY' : 'NAW';
+      rdyBtn.textContent = nowReady ? 'Rdy' : 'Naw';
     });
   }
+}
+
+/* Shelf-mode help body. Each parenthesized label in the source spec gets a
+   small inline box that mirrors the corresponding tab/button — same border,
+   bg, and text color, but at paragraph font size so it fits inline. */
+function renderShelfHowToBody(modal) {
+  const sv = shelfData && shelfData.visitor;
+  const userColor = (sv && sv.color) ? sv.color : '#bbb';
+  const userColorEsc = escapeHtml(userColor);
+
+  modal.innerHTML = '<div class="modal-content howto-modal">'
+    + '<button class="modal-close">✕</button>'
+    + '<h2>How My Shelf works</h2>'
+
+    + '<p>The <span class="howto-mini howto-mini-myshelf" '
+    + 'style="background:' + userColorEsc + '">My Shelf</span> '
+    + 'tab shows every movie you have added to any list you are '
+    + '<span class="howto-mini howto-mini-rdy">Rdy</span> on.</p>'
+
+    + '<p>The <span class="howto-mini howto-mini-all">All</span> '
+    + 'tab shows every movie anyone has added to any list you are '
+    + '<span class="howto-mini howto-mini-rdy">Rdy</span> on.</p>'
+
+    + '<p>The <span class="howto-mini howto-mini-solo" '
+    + 'style="color:' + userColorEsc + ';border-color:' + userColorEsc + '">Solo</span> '
+    + 'tab shows any movie you have added that isn\'t on any couchlist.</p>'
+
+    + '<p>Each couchlist tab shows all the movies in that list in your ranking only.</p>'
+
+    + '<p>Tap <span class="howto-mini howto-mini-rdy">Rdy</span> on the '
+    + '<span class="howto-mini howto-mini-all">All</span> '
+    + 'tab to force all lists <span class="howto-mini howto-mini-rdy">Rdy</span>; '
+    + 'tap again to force all lists <span class="howto-mini howto-mini-naw">Naw</span>.</p>'
+
+    + '<p>Tap <span class="howto-mini howto-mini-action howto-mini-move">Move</span> '
+    + 'to view/edit raw data, or to bulk copy or remove movies from lists.</p>'
+
+    + '<p>Tap <span class="howto-mini howto-mini-action howto-mini-allbtn">All</span> '
+    + 'to select all movies on the current list; tap again to clear all selections.</p>'
+
+    + '<p><span class="howto-mini howto-mini-action howto-mini-color" '
+    + 'style="color:' + userColorEsc + ';border-color:' + userColorEsc + '">Color</span> '
+    + 'changes your user color.</p>'
+
+    + '<p><span class="howto-mini howto-mini-action howto-mini-couch">Couch</span> '
+    + 'goes to couchlist mode — it will go to the current couchlist tab if you are on one.</p>'
+
+    + '</div>';
 }
 
 
@@ -2378,9 +2465,9 @@ async function loadShelf () {
   renderShelf();
 }
 
-/* Bare shell when we don't have a named visitor yet. Shows just the
-   "type your name" tab and a help button. Once a name is entered we'll
-   PUT /visitor/:id and re-render. */
+/* Bare shell when we don't have a named visitor yet. Two empty-input tabs
+   (name yourself / name a list); Move + Help stay available so the first-
+   time visitor can paste a visitor ID to "become" an existing user. */
 function renderShelfBare () {
   const tabBar = document.getElementById('tab-bar');
   tabBar.innerHTML =
@@ -2394,54 +2481,86 @@ function renderShelfBare () {
     + '</div>';
 
   const searchBox = document.getElementById('search-box');
-  const colorDot  = document.getElementById('my-color-dot');
   const welcome   = document.getElementById('welcome-msg');
   if (searchBox) searchBox.style.display = 'none';
-  if (colorDot)  colorDot.style.display = 'none';
   if (welcome)   { welcome.style.display = 'block';
                    welcome.textContent = 'Welcome — name yourself, or start a list.'; }
 
-  const infoBtn = document.querySelector('.action-btn[data-action="info"]');
-  if (infoBtn) infoBtn.style.display = 'none';                   /* INFO is being replaced by Manage */
-  /* Manage stays available so a first-time visitor can paste a visitor ID
-     to "become this user". ALL/NONE has nothing to select against here. */
+  /* In bare-shell, only Move (paste flow) + Help. Hide the rest. */
+  document.querySelectorAll('.action-btn.list-only').forEach(b => b.style.display = 'none');
   document.querySelectorAll('.action-btn.shelf-only').forEach(b => {
-    if (b.dataset.action === 'select-all') b.style.display = 'none';
-    else b.style.display = '';
+    if (b.dataset.action === 'manage') b.style.display = '';
+    else b.style.display = 'none';
   });
 
+  document.getElementById('movie-list').className = '';                 /* drop shelf-mode for bare */
   document.getElementById('movie-list').innerHTML = '';
 }
 
 function renderShelf () {
-  /* Search box visible on the user-tab (auto-adds to solo). Hidden on
-     list-tabs for now — step 8 sticks to user-tab search. The Help button
-     stays. INFO is gone; ALL/NONE and Manage are shelf-only. */
   const searchBox = document.getElementById('search-box');
   const welcome   = document.getElementById('welcome-msg');
   const colorDot  = document.getElementById('my-color-dot');
-  const infoBtn = document.querySelector('.action-btn[data-action="info"]');
-  if (infoBtn) infoBtn.style.display = 'none';
-  document.querySelectorAll('.action-btn.shelf-only').forEach(b => {
-    b.style.display = '';
-  });
 
-  /* default to the user-tab view if activeTab isn't already a known list */
+  /* Mode chrome: hide list-only stuff, show shelf-only stuff. */
+  document.querySelectorAll('.action-btn.list-only').forEach(b => b.style.display = 'none');
+  document.querySelectorAll('.action-btn.shelf-only').forEach(b => b.style.display = '');
+
+  /* Color the shelf-only side buttons from the visitor's color. */
+  const colorBtn = document.querySelector('.action-btn.side-btn-color');
+  if (colorBtn && shelfData && shelfData.visitor) {
+    colorBtn.style.color = shelfData.visitor.color;
+    colorBtn.style.borderColor = shelfData.visitor.color;
+  }
+
+  /* default to "my shelf" tab if activeTab isn't a recognized one. */
   const knownTab =
     activeTab === 'me' ||
+    activeTab === 'all' ||
     (shelfData.lists && shelfData.lists.some(l => l.id === activeTab));
   if (!knownTab) activeTab = 'me';
 
-  if (searchBox) {
-    if (activeTab === 'me') {
-      searchBox.style.display = '';
-      searchBox.placeholder = 'Add a movie to your shelf...';
+  /* Hide ALL/NONE on tabs that have no checkboxes (bare-shell-ish cases). */
+  const selBtn = document.querySelector('.action-btn[data-action="select-all"]');
+  if (selBtn) selBtn.style.display = '';
+
+  /* Couch button — link target depends on active tab.
+       on a real list-tab → that list's couchlist URL
+       on All / My Shelf  → last-viewed list (localStorage), else first
+                            joined non-solo list
+       on Solo            → the solo list URL (created on first add)
+     If we have no candidate at all (brand-new visitor with no lists),
+     gray out the button. */
+  const couchBtn = document.querySelector('.action-btn.side-btn-couch');
+  if (couchBtn) {
+    const linkId = pickCouchLinkTarget();
+    if (linkId) {
+      couchBtn.style.opacity = '';
+      couchBtn.style.cursor = 'pointer';
+      couchBtn.dataset.listLink = linkId;
     } else {
-      searchBox.style.display = 'none';
+      couchBtn.style.opacity = '0.4';
+      couchBtn.style.cursor = 'default';
+      delete couchBtn.dataset.listLink;
+    }
+  }
+
+  /* Search box always visible in shelf mode. Placeholder hints target. */
+  if (searchBox) {
+    searchBox.style.display = '';
+    if (activeTab === 'me' || activeTab === 'all') {
+      searchBox.placeholder = 'Add a movie (saved to your solo list)';
+    } else {
+      const list = shelfData.lists.find(l => l.id === activeTab);
+      const label = list && list.list_name ? list.list_name
+                  : list && list.private   ? 'solo' : 'this list';
+      searchBox.placeholder = 'Add a movie to ' + label;
     }
   }
   if (welcome)  welcome.style.display = 'none';
   if (colorDot) colorDot.style.display = 'none';
+
+  document.getElementById('movie-list').className = 'shelf-mode';
 
   renderShelfTabs();
   renderShelfMovieList();
@@ -2457,12 +2576,20 @@ function shelfEntryKey (movie, listEntry) {
 }
 
 function shelfVisibleKeys () {
+  if (activeTab === 'all') {
+    /* Movies that appear on at least one currently-RDY list (yours OR
+       added by someone else on a shared RDY list). */
+    const rdy = rdyListIdSet();
+    return shelfData.movies
+      .filter(m => m.list_entries.some(le => rdy.has(le.list_id)))
+      .map(m => shelfEntryKey(m, null));
+  }
   if (activeTab === 'me') {
     return shelfData.movies
       .filter(m => m.added_by_me)
       .map(m => shelfEntryKey(m, null));
   }
-  /* list-tab */
+  /* list-tab (incl. solo's actual id once it exists) */
   const out = [];
   shelfData.movies.forEach(m => {
     const e = m.list_entries.find(le => le.list_id === activeTab);
@@ -2471,71 +2598,144 @@ function shelfVisibleKeys () {
   return out;
 }
 
+/* Set of list_ids whose RDY pip is currently on. */
+function rdyListIdSet () {
+  const set = new Set();
+  if (!shelfData) return set;
+  shelfData.lists.forEach(l => { if (l.ready) set.add(l.id); });
+  return set;
+}
+
 function refreshShelfSelectAllLabel () {
   const btn = document.querySelector('.action-btn[data-action="select-all"]');
   if (!btn) return;
   const visible = shelfVisibleKeys();
-  /* null = "uninitialized → defaults to all checked" */
-  const allSelected = shelfSelected === null
-    ? visible.length > 0
-    : (visible.length > 0 && visible.every(k => shelfSelected.has(k)));
-  btn.textContent = allSelected ? 'NONE' : 'ALL';
+  const sel = shelfSelected();
+  const allSelected = visible.length > 0 && visible.every(k => sel.has(k));
+  btn.textContent = allSelected ? 'None' : 'All';
 }
 
 function selectAllVisible () {
-  shelfVisibleKeys().forEach(k => shelfSelected.add(k));
+  const sel = shelfSelected();
+  shelfVisibleKeys().forEach(k => sel.add(k));
 }
 
 function renderShelfTabs () {
   const v = shelfData.visitor;
   const tabBar = document.getElementById('tab-bar');
-  const userColor = v.color ? ('background:' + escapeHtml(v.color) + ';') : '';
 
-  let html = '<div class="tab tab-user tab-mine'
+  const listTabs   = shelfData.lists.filter(l => !l.private);
+  const solo = shelfData.lists.find(l => l.private && l.owner_visitor_id === v.id);
+  const soloHasMovies = solo
+    ? shelfData.movies.some(m => m.list_entries.some(le => le.list_id === solo.id))
+    : false;
+
+  /* "My Shelf" tab — leftmost, doublewide (mirrors the Couchlist tab in
+     list mode). User-color bg, no RDY pip (no ready state). */
+  const userBg = v.color ? ('background:' + escapeHtml(v.color) + ';') : '';
+  let html = '<div class="tab tab-user tab-shelf-myshelf tab-mine'
     + (activeTab === 'me' ? ' tab-active' : '')
-    + '" data-shelf-tab="me" style="' + userColor + '">'
-    + '<span class="tab-name">' + escapeHtml(v.name || '') + '</span>'
+    + '" data-shelf-tab="me" style="' + userBg + '">'
+    + '<span class="tab-name">My Shelf</span>'
     + '</div>';
 
-  /* one list-tab per joined list. When active, the nickname becomes editable
-     (tap-again-to-edit, like the username) and a "couchlist" sidebutton is
-     attached on the right. The visitor's solo list is hidden from the strip
-     — it surfaces in the user-tab's added-movies and as a Manage destination,
-     but doesn't get its own tab (per spec). */
-  shelfData.lists.filter(l => !l.private).forEach(l => {
-    const label = l.list_name && l.list_name.trim() ? l.list_name : l.id;
+  /* "All" tab — derived RDY state = "every visible list-tab (incl. solo
+     when its tab is showing) is RDY". The toggle fans out to that same
+     set; flipping any one list to NAW makes the All pip flip NAW. */
+  const allRdyLists = soloHasMovies ? listTabs.concat([solo]) : listTabs;
+  const allRdy     = allRdyLists.length > 0 && allRdyLists.every(l => l.ready);
+  html += '<div class="tab tab-user tab-shelf-all'
+    + (activeTab === 'all' ? ' tab-active' : '')
+    + '" data-shelf-tab="all">'
+    + '<span class="tab-ready-btn ' + (allRdy ? 'ready' : 'not-ready') + '" '
+    +   'data-shelf-rdy-all="1">'
+    +   (allRdy ? 'Rdy' : 'Naw')
+    + '</span>'
+    + '<span class="tab-name">All</span>'
+    + '</div>';
+
+  /* "Solo" tab — only renders if the visitor's solo list exists AND has
+     at least one movie. (Solo is created lazily on first /solo-add.) */
+  if (solo && soloHasMovies) {
+    const userColor = v.color || '#0000ee';
+    const isActive = activeTab === solo.id;
+    html += '<div class="tab tab-user tab-shelf-solo'
+      + (isActive ? ' tab-active' : '')
+      + (solo.ready ? '' : ' tab-dimmed')
+      + '" data-shelf-tab="' + escapeHtml(solo.id) + '" '
+      + 'style="color:' + escapeHtml(userColor) + ';">'
+      + '<span class="tab-ready-btn ' + (solo.ready ? 'ready' : 'not-ready') + '" '
+      +   'data-shelf-rdy-list="' + escapeHtml(solo.id) + '">'
+      +   (solo.ready ? 'Rdy' : 'Naw')
+      + '</span>'
+      + '<span class="tab-name">Solo</span>'
+      + '</div>';
+  }
+
+  /* List tabs — black bg, name centered at bottom in gradient text built
+     from each list's member colors. Unnamed lists get noname1, noname2, …
+     by chronological order among unnamed-only lists. */
+  let nonameCounter = 0;
+  listTabs.forEach(l => {
+    const hasName = !!(l.list_name && l.list_name.trim());
+    const label   = hasName ? l.list_name : 'noname' + (++nonameCounter);
     const isActive = activeTab === l.id;
-    const ready = l.ready;
-    html += '<div class="tab tab-shelf-list'
+    const ready   = l.ready;
+    const grad    = listGradient(l.member_colors);
+
+    html += '<div class="tab tab-user tab-shelf-list'
       + (isActive ? ' tab-active' : '')
       + (ready ? '' : ' tab-dimmed')
-      + '" data-shelf-tab="' + escapeHtml(l.id) + '">'
+      + '" data-shelf-tab="' + escapeHtml(l.id) + '" '
+      + 'style="--list-gradient:' + grad + ';">'
       + '<span class="tab-ready-btn ' + (ready ? 'ready' : 'not-ready') + '" '
       +   'data-shelf-rdy-list="' + escapeHtml(l.id) + '">'
-      +   (ready ? 'RDY' : 'NAW')
+      +   (ready ? 'Rdy' : 'Naw')
       + '</span>';
 
     if (isActive) {
-      /* active list-tab: nickname is an inline-editable input. Pre-filled
-         with the current nickname; placeholder shows the list ID otherwise. */
       html += '<input class="tab-name-input shelf-list-name-input" type="text" '
         +   'value="' + escapeHtml(l.list_name || '') + '" '
-        +   'placeholder="' + escapeHtml(l.id) + '" '
+        +   'placeholder="' + escapeHtml(label) + '" '
         +   'autocomplete="off" maxlength="12" '
         +   'data-list-id="' + escapeHtml(l.id) + '">';
     } else {
       html += '<span class="tab-name">' + escapeHtml(label) + '</span>';
     }
     html += '</div>';
-
-    /* attached "couchlist" button — appears immediately after the active
-       list-tab. Tapping it navigates to the actual Couchlist URL. */
-    if (isActive) {
-      html += '<a class="tab-shelf-listlink" href="/' + encodeURIComponent(l.id) + '">couchlist</a>';
-    }
   });
 
   tabBar.innerHTML = html;
+}
+
+/* Resolve which list_id the shelf-mode "couch" button should navigate to.
+   Returns null when no candidate exists (brand-new visitor with no lists). */
+function pickCouchLinkTarget () {
+  if (!shelfData) return null;
+
+  /* on a real list-tab (incl. solo's actual id once it exists) — that list */
+  const direct = shelfData.lists.find(l => l.id === activeTab);
+  if (direct) return direct.id;
+
+  /* on All / My Shelf — last-viewed list (must still be one we're on),
+     else first joined non-solo list */
+  let lastViewed = null;
+  try { lastViewed = localStorage.getItem('wtw_last_list'); } catch (e) { /* private mode */ }
+  if (lastViewed && shelfData.lists.some(l => l.id === lastViewed && !l.private)) {
+    return lastViewed;
+  }
+  const firstList = shelfData.lists.find(l => !l.private);
+  return firstList ? firstList.id : null;
+}
+
+/* Build a CSS gradient string from a list of member colors. Always returns
+   left-to-right; one color is repeated so background-clip:text still has
+   something to fill. Uses only the first two members so the gradient stays a
+   simple two-color blend regardless of list size. */
+function listGradient (colors) {
+  if (!colors || colors.length === 0) return 'linear-gradient(90deg, #ffffff, #ffffff)';
+  if (colors.length === 1) return 'linear-gradient(90deg, ' + colors[0] + ', ' + colors[0] + ')';
+  return 'linear-gradient(90deg, ' + colors[0] + ', ' + colors[1] + ')';
 }
 
 async function commitShelfListName (listId, newName) {
@@ -2550,26 +2750,50 @@ async function commitShelfListName (listId, newName) {
 function renderShelfMovieList () {
   const ml = document.getElementById('movie-list');
 
-  /* default selection on first render of a tab: everything checked.
-     null sentinel → fill with all visible. Empty-but-non-null Set means
-     the user deliberately unchecked everything; respect that. */
+  /* default: nothing checked. Drop stale selections that no longer apply
+     (e.g. data refresh removed the entry). */
   const visible = shelfVisibleKeys();
-  if (shelfSelected === null) {
-    shelfSelected = new Set(visible);
-  } else {
-    /* drop selections that no longer apply (data refresh removed an entry) */
-    const visibleSet = new Set(visible);
-    Array.from(shelfSelected).forEach(k => {
-      if (!visibleSet.has(k)) shelfSelected.delete(k);
+  const sel = shelfSelected();
+  const visibleSet = new Set(visible);
+  Array.from(sel).forEach(k => { if (!visibleSet.has(k)) sel.delete(k); });
+
+  if (activeTab === 'all') {
+    /* "All" — every movie that lives on at least one currently-RDY list
+       (any adder). RDY off everywhere → empty view; turn lists RDY (via
+       the All pip or per-tab) to populate. */
+    const rdy = rdyListIdSet();
+    const filtered = shelfData.movies.filter(m =>
+      m.list_entries.some(le => rdy.has(le.list_id)));
+    if (filtered.length === 0) {
+      const msg = (rdy.size === 0)
+        ? 'Toggle a list RDY to see its movies here.'
+        : 'No movies on the currently-RDY lists.';
+      ml.innerHTML = '<div class="shelf-empty">' + msg + '</div>';
+      refreshShelfSelectAllLabel();
+      return;
+    }
+    ml.innerHTML = '';
+    filtered.forEach((m, i) => {
+      ml.appendChild(renderShelfEntry(m, i + 1, null, null));
     });
+    refreshShelfSelectAllLabel();
+    return;
   }
 
   if (activeTab === 'me') {
-    const myMovies = shelfData.movies.filter(m => m.added_by_me);
+    /* "My Shelf" — All tab's RDY filter, narrowed to movies this visitor
+       added. Solo's RDY pip is honored the same way. */
+    const rdy = rdyListIdSet();
+    const myMovies = shelfData.movies.filter(m =>
+      m.added_by_me && m.list_entries.some(le => rdy.has(le.list_id)));
     if (myMovies.length === 0) {
-      ml.innerHTML = '<div class="shelf-empty">'
-        + 'No movies added yet. Visit a list and add something — it will show up here.'
-        + '</div>';
+      const hasAnyAdds = shelfData.movies.some(m => m.added_by_me);
+      const msg = !hasAnyAdds
+        ? 'No movies added yet. Visit a list and add something — it will show up here.'
+        : (rdy.size === 0)
+          ? 'Toggle a list RDY to see your adds here.'
+          : 'Nothing you added is on a currently-RDY list.';
+      ml.innerHTML = '<div class="shelf-empty">' + msg + '</div>';
       refreshShelfSelectAllLabel();
       return;
     }
@@ -2581,7 +2805,7 @@ function renderShelfMovieList () {
     return;
   }
 
-  /* list-tab */
+  /* list-tab (incl. solo's actual id once created) */
   const listId = activeTab;
   const onList = shelfData.movies
     .map(m => {
@@ -2604,7 +2828,12 @@ function renderShelfMovieList () {
 }
 
 /* `listEntry` is the per-list `{list_id, movie_id, added_here}` row when
-   rendering inside a list-tab; null when rendering inside the "your" tab. */
+   rendering inside a list-tab (incl. solo); null when rendering inside the
+   "all" or "my shelf" tabs.
+   Layout (7 cells, matches #movie-list.shelf-mode grid):
+     rank  grab  poster  title  note  checkbox  X
+   The note is a textarea bound to (visitor, tmdb_id, media_type) — saved on
+   blur via PUT /visitor/:id/note. Visible only to this visitor. */
 function renderShelfEntry (movie, position, listId, listEntry) {
   const entry = document.createElement('div');
   entry.className = 'entry shelf-entry';
@@ -2614,22 +2843,20 @@ function renderShelfEntry (movie, position, listId, listEntry) {
 
   const key = shelfEntryKey(movie, listEntry);
   entry.dataset.shelfKey = key;
-  const checked = shelfSelected.has(key);
+  const checked = shelfSelected().has(key);
 
   const posterUrl = movie.poster ? TMDB_IMG + 'w92' + movie.poster : '';
   const yearText  = (movie.year != null) ? movie.year : '';
 
-  /* X-to-remove. On list-tabs only entries the visitor added show one
-     (existing behavior). On the user-tab the X opens a multi-list confirm
-     popup that lists every list this movie is on (RDY ones default-checked). */
+  /* X-to-remove. On list-tabs only entries the visitor added show one.
+     On the all / my-shelf tab the X opens a multi-list confirm popup. */
   let removeHtml = '';
   if (listEntry) {
     if (listEntry.added_here) {
       removeHtml = '<button class="remove-btn" data-movie-id="' + listEntry.movie_id
         + '" data-list-id="' + escapeHtml(listId) + '">✕</button>';
     }
-  } else {
-    /* user-tab: multi-list X popup. Always shown for movies the user added. */
+  } else if (movie.added_by_me) {
     removeHtml = '<button class="remove-btn shelf-multi-x" '
       + 'data-tmdb-id="' + movie.tmdb_id
       + '" data-media-type="' + escapeHtml(movie.media_type) + '">✕</button>';
@@ -2654,7 +2881,14 @@ function renderShelfEntry (movie, position, listId, listEntry) {
         + escapeHtml(movie.title) + (yearText !== '' ? ' (' + yearText + ')' : '')
       + '</div>'
     + '</div>'
-    + '<div class="entry-comments shelf-checkbox-cell">'
+    + '<div class="entry-comments">'                  /* doubles as note column slot */
+      + '<div class="shelf-note-box' + (movie.note ? '' : ' shelf-note-empty') + '" '
+      +     'data-tmdb-id="' + movie.tmdb_id + '" '
+      +     'data-media-type="' + escapeHtml(movie.media_type) + '">'
+      +   (movie.note ? escapeHtml(movie.note) : 'note:')
+      + '</div>'
+    + '</div>'
+    + '<div class="shelf-checkbox-cell">'
       + '<input type="checkbox" class="shelf-cb" data-shelf-key="' + escapeHtml(key) + '"'
       + (checked ? ' checked' : '') + '>'
     + '</div>'
@@ -2677,22 +2911,146 @@ async function addMovieToShelf (tmdbMovie) {
     return;
   }
   const year = formatYear(tmdbMovie.release_date);
-  await fetch(API + '/visitor/' + visitorId + '/solo-add', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      tmdb_id: tmdbMovie.id,
-      media_type: tmdbMovie.media_type || 'movie',
-      title: tmdbMovie.title,
-      year: year,
-      poster: tmdbMovie.poster_path
-    })
-  });
+  const payload = {
+    tmdb_id: tmdbMovie.id,
+    media_type: tmdbMovie.media_type || 'movie',
+    title: tmdbMovie.title,
+    year: year,
+    poster: tmdbMovie.poster_path
+  };
+
+  /* Routing:
+       - real list-tab (incl. solo's actual id) → /list/:id/movies
+       - all / my-shelf                          → /solo-add
+         (lazily creates the solo list on first add) */
+  const targetList = shelfData.lists.find(l => l.id === activeTab);
+  let resp;
+  if (targetList) {
+    payload.visitor_id = visitorId;
+    resp = await fetch(API + '/list/' + targetList.id + '/movies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  } else {
+    resp = await fetch(API + '/visitor/' + visitorId + '/solo-add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  }
+
+  /* Solo guard: server returns { skipped:true, list_id, list_name } when
+     the movie is already on another non-solo list of theirs. Surface as a
+     standalone popup since the user is doing a single-movie search-add. */
+  let data = null;
+  try { data = await resp.json(); } catch (_) { /* non-JSON ignored */ }
+  if (data && data.skipped) {
+    const listLabel = (data.list_name && data.list_name.trim())
+      ? data.list_name : data.list_id;
+    alert('"' + (payload.title || data.title || 'Movie')
+      + '" not added to solo, you have already added it to "'
+      + listLabel + '".');
+  }
+
   document.getElementById('search-box').value = '';
   searchResults = [];
   renderSearchResults();
   hideMoviePopup();
   await loadShelf();
+}
+
+/* Save a private note. Empty/whitespace clears it on the server. */
+async function saveShelfNote (tmdbId, mediaType, note) {
+  await fetch(API + '/visitor/' + visitorId + '/note', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tmdb_id: tmdbId,
+      media_type: mediaType,
+      note: note
+    })
+  });
+  /* Patch local cache so a subsequent re-render keeps the saved value. */
+  if (shelfData) {
+    const m = shelfData.movies.find(mm =>
+      mm.tmdb_id === tmdbId && mm.media_type === mediaType);
+    if (m) m.note = (note && note.trim()) || '';
+  }
+}
+
+/* Click-to-expand for shelf notes — mirrors expandComment(): backdrop + modal-
+   sized box with a textarea and Done/X. The note textarea is only ever in the
+   popup, never inline (so focusout-on-row no longer applies). */
+let shelfNoteUnbindWidth = null;
+let expandedShelfNote    = null;                                   // { tmdbId, mediaType } | null
+
+function expandShelfNote (tmdbId, mediaType) {
+  if (expandedShelfNote) return;
+  expandedShelfNote = { tmdbId: tmdbId, mediaType: mediaType };
+
+  const box = document.querySelector(
+    '.shelf-note-box[data-tmdb-id="' + tmdbId + '"]'
+    + '[data-media-type="' + mediaType + '"]'
+  );
+  if (!box) return;
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'comment-backdrop';
+  backdrop.addEventListener('click', () => collapseShelfNote());
+  document.body.appendChild(backdrop);
+
+  box.classList.add('shelf-note-expanded');
+  applyViewportLayout(box);
+  if (shelfNoteUnbindWidth) shelfNoteUnbindWidth();
+  shelfNoteUnbindWidth = bindViewportWidthTracking(box);
+
+  const m = shelfData && shelfData.movies.find(mm =>
+    mm.tmdb_id === tmdbId && mm.media_type === mediaType);
+  const existing = m ? (m.note || '') : '';
+
+  box.innerHTML =
+      '<strong>Note:</strong>'
+    + '<textarea class="comment-edit shelf-note-edit">' + escapeHtml(existing) + '</textarea>'
+    + '<button class="comment-done-btn">Done</button>';
+
+  const ta = box.querySelector('.shelf-note-edit');
+  ta.focus();
+  /* place caret at end so editing existing text feels natural */
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+
+  box.querySelector('.comment-done-btn').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const newText = ta.value;
+    const oldVal  = existing;
+    if (newText.trim() !== oldVal.trim()) {
+      await saveShelfNote(tmdbId, mediaType, newText);
+    }
+    collapseShelfNote();
+  });
+
+  const xBtn = document.createElement('button');
+  xBtn.className = 'modal-close';
+  xBtn.setAttribute('aria-label', 'Close');
+  xBtn.textContent = '✕';
+  xBtn.addEventListener('click', (e) => { e.stopPropagation(); collapseShelfNote(); });
+  box.appendChild(xBtn);
+}
+
+function collapseShelfNote () {
+  if (!expandedShelfNote) return;
+  const box = document.querySelector('.shelf-note-expanded');
+  if (box) {
+    box.classList.remove('shelf-note-expanded');
+    box.style.removeProperty('--modal-top');
+    box.style.removeProperty('--modal-left');
+    box.style.removeProperty('--modal-width');
+  }
+  const backdrop = document.querySelector('.comment-backdrop');
+  if (backdrop) backdrop.remove();
+  if (shelfNoteUnbindWidth) { shelfNoteUnbindWidth(); shelfNoteUnbindWidth = null; }
+  expandedShelfNote = null;
+  loadShelf();
 }
 
 async function commitShelfListReorder (listId, orderedMovieIds) {
@@ -2710,6 +3068,36 @@ async function shelfRemoveFromList (listId, movieId) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ visitor_id: visitorId })
   });
+  await loadShelf();
+}
+
+/* Bulk RDY/NAW fan-out triggered by the "All" tab's RDY pip. The set of
+   lists controlled = same set the All pip is derived from: every non-private
+   list, plus the visitor's solo list when its tab is currently visible
+   (solo exists AND has at least one movie). */
+async function shelfToggleAllReady () {
+  const v = shelfData.visitor;
+  const listTabs = shelfData.lists.filter(l => !l.private);
+  const solo = shelfData.lists.find(l => l.private && l.owner_visitor_id === v.id);
+  const soloHasMovies = solo
+    ? shelfData.movies.some(m => m.list_entries.some(le => le.list_id === solo.id))
+    : false;
+  const lists = soloHasMovies ? listTabs.concat([solo]) : listTabs;
+
+  const everyRdy = lists.length > 0 && lists.every(l => l.ready);
+  const newReady = !everyRdy;
+  /* optimistic */
+  const targetIds = new Set(lists.map(l => l.id));
+  shelfData.lists.forEach(l => { if (targetIds.has(l.id)) l.ready = newReady; });
+  renderShelfTabs();
+  /* fire all PUTs in parallel */
+  await Promise.all(lists.map(l =>
+    fetch(API + '/list/' + l.id + '/ready', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visitor_id: visitorId, ready: newReady })
+    }).catch(() => null)
+  ));
   await loadShelf();
 }
 
@@ -2734,10 +3122,7 @@ function setupShelfEventListeners () {
   /* Drag — same handler as list mode, branches on appMode internally. */
   document.addEventListener('pointerdown', onGrabPointerDown);
 
-  /* Search — wire the existing TMDB search infrastructure once. The
-     searchTMDB → renderSearchResults pipeline is shared with list mode.
-     Click-to-add branches based on activeTab: user-tab → solo-add, list-tab
-     reserved for a future step (currently nobody hits this in shelf mode). */
+  /* Search — wire the existing TMDB search infrastructure once. */
   const searchBoxEl = document.getElementById('search-box');
   if (searchBoxEl) {
     searchBoxEl.addEventListener('input', e => debouncedSearch(e.target.value));
@@ -2754,11 +3139,54 @@ function setupShelfEventListeners () {
     });
   }
 
-  /* Help button — reuses the existing modal (which is still list-mode-flavored;
-     a shelf-specific version arrives in step 7). */
+  /* Color picker — the dedicated #color-picker <input type=color> lives
+     in the DOM; the side-btn-color triggers it. (We reuse the existing
+     handleColorChange flow.) */
+  let colorPickerEl = document.getElementById('color-picker');
+  if (!colorPickerEl) {
+    colorPickerEl = document.createElement('input');
+    colorPickerEl.type = 'color';
+    colorPickerEl.id = 'color-picker';
+    colorPickerEl.style.display = 'none';
+    document.body.appendChild(colorPickerEl);
+  }
+  colorPickerEl.addEventListener('change', e => {
+    /* In shelf mode `visitor` and `shelfData.visitor` are the same record.
+       handleColorChange wants `visitor` set + the global state, which is. */
+    handleColorChange(e.target.value);
+    if (shelfData && shelfData.visitor) shelfData.visitor.color = e.target.value;
+    renderShelf();
+  });
+
+  /* Help / Move / Color / Couch / All-RDY / search-row clicks. */
   document.addEventListener('click', e => {
     if (e.target.closest('.action-btn[data-action="howto"]')) {
       openHowToModal();
+      return;
+    }
+    /* Color button → trigger native picker */
+    if (e.target.closest('.action-btn.side-btn-color')) {
+      const picker = document.getElementById('color-picker');
+      if (visitor && picker) {
+        picker.value = visitor.color || '#3366ff';
+        picker.click();
+      }
+      return;
+    }
+    /* Couch button → navigate to active list's couchlist URL */
+    const couchBtn = e.target.closest('.action-btn.side-btn-couch');
+    if (couchBtn) {
+      if (couchBtn.dataset.listLink) {
+        window.location.href = '/' + couchBtn.dataset.listLink;
+      }
+      return;
+    }
+
+    /* "All" RDY pip — bulk fan-out RDY/NAW to every list-tab list. */
+    const rdyAll = e.target.closest('.tab-ready-btn[data-shelf-rdy-all]');
+    if (rdyAll) {
+      e.stopPropagation();
+      shelfToggleAllReady();
       return;
     }
 
@@ -2782,16 +3210,15 @@ function setupShelfEventListeners () {
     }
 
     /* Tab switch — clicking anywhere on a shelf tab (except buttons handled
-       above) makes it active. Reset checkbox selection so the new tab opens
-       with everything checked by default. */
+       above) makes it active. Each tab keeps its own (session-only) checkbox
+       selection — see shelfSelectedByTab. renderShelf() repaints the tab
+       strip + entry list AND refreshes search-box placeholder / couch link. */
     const tab = e.target.closest('.tab[data-shelf-tab]');
     if (tab) {
       const newTab = tab.dataset.shelfTab;
       if (newTab !== activeTab) {
         activeTab = newTab;
-        shelfSelected = null;             /* reset to "default to all checked" on the new tab */
-        renderShelfTabs();
-        renderShelfMovieList();
+        renderShelf();
       }
       return;
     }
@@ -2799,10 +3226,10 @@ function setupShelfEventListeners () {
     /* ALL/NONE — toggle all visible checkboxes. */
     if (e.target.closest('.action-btn[data-action="select-all"]')) {
       const visible = shelfVisibleKeys();
-      if (shelfSelected === null) shelfSelected = new Set(visible);
-      const allSelected = visible.length > 0 && visible.every(k => shelfSelected.has(k));
-      if (allSelected) shelfSelected.clear();
-      else             visible.forEach(k => shelfSelected.add(k));
+      const sel = shelfSelected();
+      const allSelected = visible.length > 0 && visible.every(k => sel.has(k));
+      if (allSelected) sel.clear();
+      else             visible.forEach(k => sel.add(k));
       renderShelfMovieList();
       return;
     }
@@ -2822,14 +3249,26 @@ function setupShelfEventListeners () {
       return;
     }
 
-    /* Movie popup show — clicking poster or title. */
-    const popupTarget = e.target.closest('.entry-poster, .entry-title');
-    if (popupTarget) {
-      const tmdbId    = parseInt(popupTarget.dataset.tmdbId);
-      const mediaType = popupTarget.dataset.mediaType || 'movie';
+    /* Movie popup show — clicking poster or title text only (not the
+       whitespace next to the title). Dataset lives on parent .entry-title. */
+    const popupHit = e.target.closest('.entry-poster, .entry-title-text');
+    if (popupHit) {
+      const src       = popupHit.classList.contains('entry-poster') ? popupHit : popupHit.closest('.entry-title');
+      const tmdbId    = parseInt(src.dataset.tmdbId);
+      const mediaType = src.dataset.mediaType || 'movie';
       if (tmdbId) showMoviePopup(tmdbId, mediaType);
       return;
     }
+
+    /* Note box — open modal-style editor (parallel to comment expand). */
+    const noteBox = e.target.closest('.shelf-note-box');
+    if (noteBox && !noteBox.classList.contains('shelf-note-expanded') && !expandedShelfNote) {
+      e.stopPropagation();
+      expandShelfNote(parseInt(noteBox.dataset.tmdbId), noteBox.dataset.mediaType || 'movie');
+      return;
+    }
+    /* clicks inside the expanded note shouldn't bubble to the popup-hide path */
+    if (e.target.closest('.shelf-note-expanded')) return;
 
     /* Movie popup hide — click outside. */
     if (e.target.closest('.popup-content')) return;
@@ -2842,8 +3281,9 @@ function setupShelfEventListeners () {
     const cb = e.target.closest('.shelf-cb');
     if (!cb) return;
     const k = cb.dataset.shelfKey;
-    if (cb.checked) shelfSelected.add(k);
-    else            shelfSelected.delete(k);
+    const sel = shelfSelected();
+    if (cb.checked) sel.add(k);
+    else            sel.delete(k);
     refreshShelfSelectAllLabel();
   });
 
@@ -2889,12 +3329,11 @@ function setupShelfEventListeners () {
         body: JSON.stringify({ visitor_id: visitorId, list_name: text })
       });
       activeTab = newListId;
-      shelfSelected = null;
       await loadShelf();
     }
   });
 
-  /* commit the list-nickname input when the user moves focus away */
+  /* commit the list-nickname input when the user moves focus away. */
   document.addEventListener('focusout', async (e) => {
     if (e.target && e.target.classList
         && e.target.classList.contains('shelf-list-name-input')) {
@@ -2904,6 +3343,7 @@ function setupShelfEventListeners () {
       const oldName = lst ? (lst.list_name || '') : '';
       if (newName === oldName) return;                              /* no-op */
       await commitShelfListName(listId, newName);
+      return;
     }
   });
 }
@@ -2948,16 +3388,15 @@ function openShelfManageModal () {
     cb.addEventListener('change', refreshDestToggleLabel);
   });
 
-  modal.querySelector('#manage-copy-btn').addEventListener('click', shelfManageCopy);
-  modal.querySelector('#manage-remove-btn').addEventListener('click', shelfManageRemove);
-
-  const addBtn = modal.querySelector('#manage-add-list-btn');
-  if (addBtn) addBtn.addEventListener('click', shelfManageAddList);
-
-  const applyBtn = modal.querySelector('#manage-apply-btn');
-  if (applyBtn) applyBtn.addEventListener('click', shelfManageApplyPaste);
+  modal.querySelector('#manage-btn-user').addEventListener('click', shelfManageChangeUser);
+  modal.querySelector('#manage-btn-lists').addEventListener('click', shelfManageAddCouchlists);
+  const copyBtn   = modal.querySelector('#manage-btn-copy');
+  const removeBtn = modal.querySelector('#manage-btn-remove');
+  if (copyBtn)   copyBtn.addEventListener('click', shelfManageCopy);
+  if (removeBtn) removeBtn.addEventListener('click', shelfManageRemove);
 
   refreshDestToggleLabel();
+  alignManageButtons();
 }
 
 function closeShelfManageModal () {
@@ -2970,8 +3409,8 @@ function closeShelfManageModal () {
 }
 
 function renderManageModalHtml () {
-  const v = shelfData.visitor;
   const blob = buildShelfBlob();
+  const hasMovies = shelfSelected().size > 0;
 
   /* Dest-list options: every list this visitor is on, including their
      solo list (rendered with a distinguishing label). Default UNCHECKED. */
@@ -2987,58 +3426,113 @@ function renderManageModalHtml () {
       + '</label>';
   }).join('');
 
+  /* Movie-action buttons only render when there's a selection — otherwise
+     the middle column shows just Change User and Add Couchlists. */
+  const movieBtns = hasMovies
+    ? '<button id="manage-btn-copy"   class="manage-col-btn">Copy movies to selected lists</button>'
+    + '<button id="manage-btn-remove" class="manage-col-btn">Remove movies from selected lists</button>'
+    : '';
+
   return ''
     + '<div class="modal-content shelf-manage-modal">'
     +   '<button class="modal-close" aria-label="Close">✕</button>'
-    +   '<h2 class="manage-title">Manage</h2>'
+    +   '<h2 class="manage-title">Move</h2>'
 
-    +   '<div class="manage-section">'
-    +     '<label class="manage-label">Snapshot (read-only — paste below to apply)</label>'
-    +     '<textarea id="manage-blob" readonly>' + escapeHtml(blob) + '</textarea>'
-    +   '</div>'
+    +   '<div class="manage-grid">'
 
-    +   '<div class="manage-section">'
-    +     '<div class="manage-section-header">'
-    +       '<span class="manage-label">Lists to act on</span>'
-    +       '<button id="manage-dest-toggle" class="manage-mini-btn">ALL</button>'
+    +     '<div class="manage-col manage-col-blob">'
+    +       '<textarea id="manage-blob" spellcheck="false">' + escapeHtml(blob) + '</textarea>'
     +     '</div>'
-    +     '<div id="manage-dest-list">' + destsHtml + '</div>'
-    +     '<div class="manage-add-row">'
-    +       '<input type="text" id="manage-add-input" placeholder="8-char list ID" '
-    +         'maxlength="8" autocomplete="off">'
-    +       '<button id="manage-add-list-btn" class="manage-mini-btn">+ Add / Create</button>'
+
+    +     '<div class="manage-col manage-col-buttons">'
+    +       '<button id="manage-btn-user"  class="manage-col-btn">Change User</button>'
+    +       '<button id="manage-btn-lists" class="manage-col-btn">Add Couchlists</button>'
+    +       movieBtns
     +     '</div>'
-    +   '</div>'
 
-    +   '<div class="manage-section manage-actions">'
-    +     '<button id="manage-copy-btn">Copy selected → checked lists</button>'
-    +     '<button id="manage-remove-btn">Remove selected from checked lists</button>'
-    +   '</div>'
+    +     '<div class="manage-col manage-col-dests">'
+    +       '<div class="manage-section-header">'
+    +         '<span class="manage-label">Lists</span>'
+    +         '<button id="manage-dest-toggle" class="manage-mini-btn">All</button>'
+    +       '</div>'
+    +       '<div id="manage-dest-list">' + destsHtml + '</div>'
+    +     '</div>'
 
-    +   '<div class="manage-section">'
-    +     '<label class="manage-label">Apply a snapshot or visitor ID</label>'
-    +     '<textarea id="manage-apply-input" placeholder="Paste a snapshot or 10-char visitor ID"></textarea>'
-    +     '<button id="manage-apply-btn" class="manage-mini-btn">Apply</button>'
-    +     '<div class="manage-hint">Pasting a different visitor ID becomes that user (replaces the old Info paste flow).</div>'
     +   '</div>'
 
     + '</div>';
 }
 
+/* Position the middle-column buttons so each one sits next to the row in
+   the textarea blob it acts on. Measures the textarea's font / padding,
+   finds the line index of "Your ID:", "## Lists", "## Selected movies",
+   and absolute-positions each button at that y. Skipped at narrow widths
+   (where the layout falls back to stacked rows). */
+function alignManageButtons () {
+  const ta   = document.getElementById('manage-blob');
+  const grid = document.querySelector('.manage-grid');
+  if (!ta || !grid) return;
+  /* Mobile fallback: when the grid stacks (single column), let buttons
+     flow naturally — clear any leftover absolute positioning. */
+  const stacked = window.getComputedStyle(grid).gridTemplateColumns
+    .split(' ').filter(Boolean).length < 3;
+  const ids = ['manage-btn-user', 'manage-btn-lists',
+               'manage-btn-copy', 'manage-btn-remove'];
+  if (stacked) {
+    ids.forEach(id => {
+      const b = document.getElementById(id);
+      if (b) { b.style.position = ''; b.style.top = ''; }
+    });
+    return;
+  }
+
+  const lines = ta.value.split('\n');
+  const idxUser   = lines.findIndex(l => /^Your ID:/.test(l));
+  const idxLists  = lines.findIndex(l => /^##\s+Lists\b/.test(l));
+  const idxMovies = lines.findIndex(l => /^##\s+Selected movies\b/.test(l));
+
+  const cs = window.getComputedStyle(ta);
+  const padTop     = parseFloat(cs.paddingTop)  || 0;
+  const lineHeight = parseFloat(cs.lineHeight)  || 17;
+  const yOf = (i) => padTop + Math.max(0, i) * lineHeight;
+
+  const place = (id, y) => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    b.style.position = 'absolute';
+    b.style.top = y + 'px';
+    b.style.left  = '0';
+    b.style.right = '0';
+  };
+  place('manage-btn-user',  yOf(idxUser   >= 0 ? idxUser   : 1));
+  place('manage-btn-lists', yOf(idxLists  >= 0 ? idxLists  : 5));
+  if (idxMovies >= 0) {
+    place('manage-btn-copy',   yOf(idxMovies));
+    place('manage-btn-remove', yOf(idxMovies) + 36);
+  }
+}
+
 function buildShelfBlob () {
   const lines = [];
   const v = shelfData.visitor;
+  const solo = shelfData.lists.find(l => l.private && l.owner_visitor_id === v.id);
+  const soloId = solo ? solo.id : null;
   lines.push('# My Shelf snapshot');
   lines.push('Your ID:    ' + v.id + (v.name ? ' (' + v.name + ')' : ''));
   lines.push('Snapshot:   ' + new Date().toISOString().split('T')[0]);
-  lines.push('Active tab: ' + (activeTab === 'me' ? '(your tab)' : activeTab));
+  const activeLabel = activeTab === 'me'      ? '(your tab)'
+                    : activeTab === soloId    ? '(solo)'
+                    : activeTab;
+  lines.push('Active tab: ' + activeLabel);
   lines.push('');
 
-  /* Lists section — show all joined lists; mark RDY snapshot */
+  /* Lists section — show joined non-solo lists; mark RDY snapshot.
+     Solo (private) lists are intentionally omitted from the blob. */
   lines.push('## Lists');
   shelfData.lists.forEach(l => {
+    if (l.private) return;
     const label = l.list_name && l.list_name.trim() ? l.list_name : '(no nickname)';
-    const rdy = shelfReadySnap[l.id] ? 'RDY' : 'NAW';
+    const rdy = shelfReadySnap[l.id] ? 'Rdy' : 'Naw';
     lines.push('- ' + l.id + '  ' + label + '  [' + rdy + ']');
   });
   lines.push('');
@@ -3046,8 +3540,9 @@ function buildShelfBlob () {
   /* Selected movies — match selection at the time of open */
   lines.push('## Selected movies');
   const visible = shelfVisibleKeys();
+  const sel = shelfSelected();
   visible.forEach(k => {
-    if (!shelfSelected.has(k)) return;
+    if (!sel.has(k)) return;
     /* find the movie + (if list-tab) the list_entry for this key */
     let movie = null, listEntry = null;
     if (k.startsWith('m:')) {
@@ -3067,10 +3562,13 @@ function buildShelfBlob () {
     lines.push('- tmdb:    ' + movie.tmdb_id);
     lines.push('- media:   ' + movie.media_type);
     if (listEntry) {
-      lines.push('- on list: ' + listEntry.list_id
+      const label = listEntry.list_id === soloId ? '(solo)' : listEntry.list_id;
+      lines.push('- on list: ' + label
         + (listEntry.added_here ? ' (you added)' : ''));
     } else {
-      const onLists = movie.list_entries.map(le => le.list_id).join(', ');
+      const onLists = movie.list_entries
+        .filter(le => le.list_id !== soloId)
+        .map(le => le.list_id).join(', ');
       if (onLists) lines.push('- on lists: ' + onLists);
     }
     lines.push('');
@@ -3092,7 +3590,7 @@ function refreshDestToggleLabel () {
   const btn = document.getElementById('manage-dest-toggle');
   if (!btn) return;
   const allChecked = cbs.length > 0 && cbs.every(cb => cb.checked);
-  btn.textContent = allChecked ? 'NONE' : 'ALL';
+  btn.textContent = allChecked ? 'None' : 'All';
 }
 
 function getSelectedDestListIds () {
@@ -3102,12 +3600,12 @@ function getSelectedDestListIds () {
 }
 
 /* Build the {tmdb_id, media_type, ...} item array for currently selected
-   shelf entries. Each shelfSelected key resolves to one movie object in
+   shelf entries. Each selected key resolves to one movie object in
    shelfData.movies. Used by both Copy and Remove. */
 function getSelectedShelfMovies () {
   const out = [];
   const seen = new Set();
-  shelfSelected.forEach(k => {
+  shelfSelected().forEach(k => {
     let movie = null;
     if (k.startsWith('m:')) {
       const movieId = parseInt(k.slice(2));
@@ -3150,8 +3648,27 @@ async function shelfManageCopy () {
     body: JSON.stringify({ items, dest_list_ids: dests })
   });
   const data = await resp.json();
-  alert('Copied ' + (data.copied || 0) + ' movie/list pair(s); '
-    + (data.skipped ? data.skipped.length : 0) + ' skipped (already on list).');
+  const m = movies.length, l = dests.length;
+  const c = data.copied || 0;
+  const skippedArr = data.skipped || [];
+  const soloSkips = skippedArr.filter(s => s.reason === 'already-on-another-list');
+  const otherSkips = skippedArr.length - soloSkips.length;
+  const mw = m === 1 ? 'movie' : 'movies';
+  const lw = l === 1 ? 'list'  : 'lists';
+  let msg = 'Copied ' + m + ' ' + mw + ' to ' + l + ' ' + lw + ': ' + c + ' added';
+  if (otherSkips > 0) msg += ', ' + otherSkips + ' already there';
+  msg += '.';
+  if (soloSkips.length) {
+    msg += '\n';
+    soloSkips.forEach(sk => {
+      const listLabel = (sk.other_list_name && sk.other_list_name.trim())
+        ? sk.other_list_name : sk.other_list_id;
+      msg += '\n"' + (sk.title || 'Movie')
+        + '" not added to solo, you have already added it to "'
+        + listLabel + '".';
+    });
+  }
+  alert(msg);
   closeShelfManageModal();
   await loadShelf();
 }
@@ -3202,42 +3719,85 @@ async function shelfManageRemove () {
   await loadShelf();
 }
 
-async function shelfManageAddList () {
-  const input = document.getElementById('manage-add-input');
-  const id = (input.value || '').trim();
-  if (!/^[A-Za-z0-9]{1,12}$/.test(id)) { alert('Enter a 1-12 char list ID.'); return; }
-  /* Joining (or creating) the list — uses the existing /join endpoint. */
-  await fetch(API + '/list/' + id + '/join', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ visitor_id: visitorId })
-  });
-  closeShelfManageModal();
-  await loadShelf();
+/* Read the currently-edited blob from the textarea. Both Change User and
+   Add Couchlists work off this — so the user can edit lines (e.g. paste
+   in a different ID) before clicking. */
+function getManageBlobText () {
+  const ta = document.getElementById('manage-blob');
+  return ta ? ta.value : '';
 }
 
-async function shelfManageApplyPaste () {
-  const ta = document.getElementById('manage-apply-input');
-  const text = (ta.value || '').trim();
-  if (!text) return;
-
-  /* a 10-char alphanumeric on its own = a visitor ID — become this user */
-  if (/^[A-Za-z0-9]{10}$/.test(text)) {
-    visitorId = text;
-    setCookie('wtw_visitor', visitorId);
-    window.location.reload();
-    return;
+/* Pull the "## Lists" section out of a shelf snapshot blob.
+   Returns [{ id, name }] — name may be empty for "(no nickname)". */
+function parseShelfBlobLists (text) {
+  const out = [];
+  let inLists = false;
+  for (const raw of (text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (/^##\s+Lists\b/i.test(line))      { inLists = true;  continue; }
+    if (/^##\s+/.test(line))              { inLists = false; continue; }
+    if (!inLists || !line)                { continue; }
+    /* "- {id}  {name}  [Rdy/Naw]" — name may contain spaces; [Rdy] is optional. */
+    const m = line.match(/^-\s+([A-Za-z0-9]{1,12})\s+(.*?)\s*(?:\[[^\]]*\])?\s*$/);
+    if (!m) continue;
+    let name = m[2].trim();
+    if (name === '(no nickname)') name = '';
+    out.push({ id: m[1], name });
   }
+  return out;
+}
 
-  /* otherwise treat as a snapshot blob — extract Your_ID line and become */
+/* "Change User" — read the blob's "Your ID: XXXX (name)" line. If it's a
+   different visitor, swap the cookie and reload. */
+async function shelfManageChangeUser () {
+  const text = getManageBlobText();
   const parsed = parseBlob(text);
-  if (parsed && parsed.visitor_id && /^[A-Za-z0-9]{10}$/.test(parsed.visitor_id)) {
-    visitorId = parsed.visitor_id;
-    setCookie('wtw_visitor', visitorId);
-    window.location.reload();
+  const newId = parsed && parsed.visitor_id;
+  if (!newId || !/^[A-Za-z0-9]{10}$/.test(newId)) {
+    alert("Couldn't find a 'Your ID:' line with a 10-char visitor ID.");
     return;
   }
-  alert("Couldn't find a visitor ID to apply. Paste a 10-char ID or a snapshot with a 'Your ID:' line.");
+  if (newId === visitorId) {
+    alert('That is already the current user.');
+    return;
+  }
+  visitorId = newId;
+  setCookie('wtw_visitor', visitorId);
+  window.location.reload();
+}
+
+/* "Add Couchlists" — read the blob's "## Lists" section. For each list
+   the current visitor isn't already on, join it; if the blob supplies a
+   nickname, set it. (Solo lists in the blob are skipped.) */
+async function shelfManageAddCouchlists () {
+  const text  = getManageBlobText();
+  const lists = parseShelfBlobLists(text);
+  if (lists.length === 0) {
+    alert("Couldn't find a '## Lists' section in the text.");
+    return;
+  }
+  const currentIds = new Set(shelfData.lists.map(l => l.id));
+  const toAdd = lists.filter(l => !currentIds.has(l.id) && /^[A-Za-z0-9]{1,12}$/.test(l.id));
+  if (toAdd.length === 0) {
+    alert('No new lists to add — you are already on all of these.');
+    return;
+  }
+  for (const l of toAdd) {
+    await fetch(API + '/list/' + l.id + '/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visitor_id: visitorId })
+    });
+    if (l.name) {
+      await fetch(API + '/list/' + l.id + '/list-name', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visitor_id: visitorId, list_name: l.name.slice(0, 12) })
+      });
+    }
+  }
+  closeShelfManageModal();
+  await loadShelf();
 }
 
 /* ----------------------------------------------------------------------------
@@ -3269,7 +3829,7 @@ function openShelfMultiRemove (tmdb_id, media_type) {
         + 'data-list-id="' + escapeHtml(le.list_id) + '" '
         + 'data-movie-id="' + le.movie_id + '"'
         + (isRdy ? ' checked' : '') + '>'
-      + '<span>' + escapeHtml(label) + (isRdy ? ' <em>RDY</em>' : '') + '</span>'
+      + '<span>' + escapeHtml(label) + (isRdy ? ' <em>Rdy</em>' : '') + '</span>'
       + '</label>';
   }).join('');
 

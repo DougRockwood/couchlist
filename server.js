@@ -182,6 +182,13 @@ try {
   db.exec('ALTER TABLE list_visitors ADD COLUMN list_name TEXT');
 } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
 
+/* Per-(visitor, movie) private note. Visible only to its visitor; rendered
+   on every shelf view (All / My Shelf / Solo / list-tab). Stored on
+   user_movies because that table already keys on (visitor, tmdb, media). */
+try {
+  db.exec('ALTER TABLE user_movies ADD COLUMN note TEXT');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
 
 /* Bootstrap user_movies from existing per-list rankings.
 
@@ -506,6 +513,30 @@ function setListProjection (visitor_id, list_id, ordered_movie_ids) {
   });
 }
 
+/* findVisitorMovieOnAnotherList — for the solo-list "already-elsewhere" guard.
+   Returns { list_id, list_name } for some non-solo list `vid` is on that
+   already has this (tmdb_id, media_type), or undefined.
+
+   "Non-solo" here means: any list that isn't a private list owned by `vid`.
+   That covers both the canonical solo (id = vid.slice(0,8), private=1,
+   owner=vid) and any future per-user private list. The caller passes
+   `excludeListId` so the search-bar Solo-tab path can also exclude itself
+   defensively (e.g. if the lazy-create just happened in the same tx). */
+function findVisitorMovieOnAnotherList (vid, tmdb_id, media_type, excludeListId) {
+  return db.prepare(
+    'SELECT m.list_id, lv.list_name '
+    + 'FROM movies m '
+    + 'JOIN list_visitors lv '
+    +   'ON lv.list_id = m.list_id AND lv.visitor_id = ? '
+    + 'JOIN lists l ON l.id = m.list_id '
+    + 'WHERE m.tmdb_id = ? AND m.media_type = ? '
+    +   'AND m.list_id != ? '
+    +   'AND (l.private = 0 OR l.owner_visitor_id != ?) '
+    + 'ORDER BY m.id DESC '
+    + 'LIMIT 1'
+  ).get(vid, tmdb_id, media_type, excludeListId || '', vid);
+}
+
 
 /* ============================================================================
    SECTION 3: MIDDLEWARE
@@ -610,8 +641,29 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
     slot: r.slot,
     private: r.private,
     owner_visitor_id: r.owner_visitor_id,
-    created: r.created
+    created: r.created,
+    member_colors: []                         // filled below
   }));
+
+  /* per-list member colors (slot order) — drives the shelf list-tab's
+     gradient text. Empty for the solo list since the only member is
+     the visitor themselves; renderer falls back to the user color. */
+  if (lists.length) {
+    const placeholders = lists.map(() => '?').join(',');
+    const memberRows = db.prepare(
+      'SELECT lv.list_id, v.color, lv.slot '
+      + 'FROM list_visitors lv '
+      + 'JOIN visitors v ON v.id = lv.visitor_id '
+      + 'WHERE lv.list_id IN (' + placeholders + ') '
+      + 'ORDER BY lv.list_id, lv.slot'
+    ).all(lists.map(l => l.id));
+    const colorsByList = new Map();
+    for (const r of memberRows) {
+      if (!colorsByList.has(r.list_id)) colorsByList.set(r.list_id, []);
+      colorsByList.get(r.list_id).push(r.color);
+    }
+    lists.forEach(l => { l.member_colors = colorsByList.get(l.id) || []; });
+  }
 
   /* one row per (movie key, list this visitor is on); group in JS so each
      grouped row carries the per-list movie_id + added_here flag */
@@ -619,7 +671,7 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
     SELECT
       m.tmdb_id, m.media_type, m.title, m.year, m.poster,
       m.id AS movie_id, m.list_id, m.added_by,
-      um.master_rank
+      um.master_rank, um.note
     FROM movies m
     JOIN user_movies um
       ON um.visitor_id = ? AND um.tmdb_id = m.tmdb_id AND um.media_type = m.media_type
@@ -640,6 +692,7 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
         year: r.year,
         poster: r.poster,
         master_rank: r.master_rank,
+        note: r.note || '',
         added_by_me: false,
         list_entries: []
       };
@@ -710,6 +763,33 @@ app.put('/api/visitor/:id/shelf-ranks', (req, res) => {
 });
 
 
+/* PUT /api/visitor/:id/note — set the visitor's private note for one movie key.
+   Body: { tmdb_id, media_type, note }. Empty/whitespace note clears it.
+   404 if the visitor has no user_movies row for that key (we don't auto-create
+   here — notes only attach to movies you've actually encountered). */
+app.put('/api/visitor/:id/note', (req, res) => {
+  const vid = req.params.id;
+  const { tmdb_id, media_type, note } = req.body;
+
+  if (!Number.isInteger(tmdb_id) || tmdb_id <= 0) {
+    return res.status(400).json({ error: 'invalid tmdb_id' });
+  }
+  if (media_type !== 'movie' && media_type !== 'tv') {
+    return res.status(400).json({ error: 'invalid media_type' });
+  }
+  const trimmed = (typeof note === 'string') ? note.trim() : '';
+  const value   = trimmed === '' ? null : trimmed.slice(0, 2000);
+
+  const result = db.prepare(`
+    UPDATE user_movies SET note = ?
+    WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?
+  `).run(value, vid, tmdb_id, media_type);
+
+  if (result.changes === 0) return res.status(404).json({ error: 'no matching user_movies row' });
+  res.json({ ok: true, note: value || '' });
+});
+
+
 /* POST /api/visitor/:id/copy — bulk-copy movies to multiple destination lists.
 
    Body: {
@@ -762,6 +842,8 @@ app.post('/api/visitor/:id/copy', (req, res) => {
   const skipped = [];
   let copied = 0;
 
+  const soloId = vid.slice(0, 8);
+
   const tx = db.transaction(() => {
     const affectedListIds = new Set();
     const affectedVisitorIds = new Set();
@@ -773,6 +855,11 @@ app.post('/api/visitor/:id/copy', (req, res) => {
         db.prepare('INSERT INTO lists (id, created) VALUES (?, ?)')
           .run(dest, new Date().toISOString().split('T')[0]);
       }
+      const destLst = db.prepare(
+        'SELECT private, owner_visitor_id FROM lists WHERE id = ?'
+      ).get(dest);
+      const destIsOwnSolo =
+        destLst && destLst.private === 1 && destLst.owner_visitor_id === vid;
 
       /* auto-join visitor if needed */
       let slot = db.prepare(
@@ -810,6 +897,27 @@ app.post('/api/visitor/:id/copy', (req, res) => {
           : item.year === '?' ? '?' : Number(item.year);
         const validPoster =
           item.poster == null || item.poster === '' ? null : item.poster;
+
+        /* Solo guard: when copying TO the user's own solo, skip any item
+           they already have on another (non-solo) list. The frontend reads
+           `reason` + `other_list_*` to surface a "not added to solo, you
+           already have it on X" line in the modal alert. */
+        if (destIsOwnSolo) {
+          const elsewhere = findVisitorMovieOnAnotherList(
+            vid, item.tmdb_id, item.media_type, dest
+          );
+          if (elsewhere) {
+            skipped.push({
+              tmdb_id: item.tmdb_id, media_type: item.media_type,
+              title: item.title || '',
+              list_id: dest,
+              reason: 'already-on-another-list',
+              other_list_id: elsewhere.list_id,
+              other_list_name: elsewhere.list_name || null
+            });
+            continue;
+          }
+        }
 
         const exists = db.prepare(
           'SELECT id FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
@@ -890,6 +998,21 @@ app.post('/api/visitor/:id/solo-add', (req, res) => {
   }
 
   const soloId = vid.slice(0, 8);
+
+  /* Solo guard: refuse to add if the visitor already has this movie on any
+     non-solo list of theirs. Solo is supposed to be the "movies that aren't
+     anywhere else" stash. Returns { skipped: true, list_id, list_name } so
+     the client can show a "not added to solo, already on X" popup. */
+  const elsewhere = findVisitorMovieOnAnotherList(vid, tmdb_id, mediaType, soloId);
+  if (elsewhere) {
+    return res.json({
+      skipped: true,
+      reason: 'already-on-another-list',
+      title: title || '',
+      list_id: elsewhere.list_id,
+      list_name: elsewhere.list_name || null
+    });
+  }
 
   const tx = db.transaction(() => {
     let lst = db.prepare('SELECT * FROM lists WHERE id = ?').get(soloId);
@@ -1220,6 +1343,32 @@ app.post('/api/list/:id/movies', (req, res) => {
       'SELECT * FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
     ).get(listId, tmdbIdNum, mediaType);
     if (existing) return res.json(existing);
+  }
+
+  /* Solo guard: if this list IS the visitor's solo list, refuse the add when
+     the movie is already on any of their non-solo lists. Same shape as
+     /solo-add — the search-bar Solo-tab path lands here, so the rule must
+     apply identically. */
+  if (tmdbIdNum != null) {
+    const lstRow = db.prepare(
+      'SELECT private, owner_visitor_id FROM lists WHERE id = ?'
+    ).get(listId);
+    const isOwnSolo =
+      lstRow && lstRow.private === 1 && lstRow.owner_visitor_id === visitor_id;
+    if (isOwnSolo) {
+      const elsewhere = findVisitorMovieOnAnotherList(
+        visitor_id, tmdbIdNum, mediaType, listId
+      );
+      if (elsewhere) {
+        return res.json({
+          skipped: true,
+          reason: 'already-on-another-list',
+          title: title || '',
+          list_id: elsewhere.list_id,
+          list_name: elsewhere.list_name || null
+        });
+      }
+    }
   }
 
   /* All the writes below run inside a single transaction so an error mid-way

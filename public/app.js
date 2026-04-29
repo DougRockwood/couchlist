@@ -3031,22 +3031,23 @@ function renderShelfTabs () {
       + '</div>';
   }
 
-  /* List tabs — black bg, name centered at bottom in gradient text built
-     from each list's member colors. Unnamed lists get noname1, noname2, …
-     by chronological order among unnamed-only lists. */
+  /* List tabs — solid bg per list, sticky-saved server-side as
+     lists.tab_color (mixed from member colors when first seen). Unnamed
+     lists get noname1, noname2, … by chronological order among
+     unnamed-only lists. */
   let nonameCounter = 0;
   listTabs.forEach(l => {
     const hasName = !!(l.list_name && l.list_name.trim());
     const label   = hasName ? l.list_name : 'noname' + (++nonameCounter);
     const isActive = activeTab === l.id;
     const ready   = l.ready;
-    const grad    = listGradient(l.member_colors);
+    const tabColor = l.tab_color || '#cccccc';
 
     html += '<div class="tab tab-user tab-shelf-list'
       + (isActive ? ' tab-active' : '')
       + (ready ? '' : ' tab-dimmed')
       + '" data-shelf-tab="' + escapeHtml(l.id) + '" '
-      + 'style="--list-gradient:' + grad + ';">'
+      + 'style="background:' + escapeHtml(tabColor) + ';">'
       + '<span class="tab-ready-btn ' + (ready ? 'ready' : 'not-ready') + '" '
       +   'data-shelf-rdy-list="' + escapeHtml(l.id) + '">'
       +   (ready ? 'Rdy' : 'Naw')
@@ -3084,16 +3085,6 @@ function pickCouchLinkTarget () {
   }
   const firstList = shelfData.lists.find(l => !l.private);
   return firstList ? firstList.id : null;
-}
-
-/* Build a CSS gradient string from a list of member colors. Always returns
-   left-to-right; one color is repeated so background-clip:text still has
-   something to fill. Uses only the first two members so the gradient stays a
-   simple two-color blend regardless of list size. */
-function listGradient (colors) {
-  if (!colors || colors.length === 0) return 'linear-gradient(90deg, #ffffff, #ffffff)';
-  if (colors.length === 1) return 'linear-gradient(90deg, ' + colors[0] + ', ' + colors[0] + ')';
-  return 'linear-gradient(90deg, ' + colors[0] + ', ' + colors[1] + ')';
 }
 
 async function commitShelfListName (listId, newName) {

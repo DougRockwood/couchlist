@@ -196,6 +196,14 @@ try {
   db.exec('ALTER TABLE visitors ADD COLUMN last_list_id TEXT');
 } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
 
+/* Per-list shelf tab background color. Computed once from the list's
+   member colors when the list is first read on the shelf endpoint, then
+   sticky — adding/removing members doesn't recolor the tab, so each list
+   keeps a stable identity. Future-room: a user can override it. */
+try {
+  db.exec('ALTER TABLE lists ADD COLUMN tab_color TEXT');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
 
 /* Bootstrap user_movies from existing per-list rankings.
 
@@ -613,6 +621,76 @@ app.put('/api/visitor/:id', (req, res) => {
   res.json({ id: req.params.id, name, color });
 });
 
+/* ============================================================================
+   COLOR HELPERS — used to mix a list's member colors into one solid tab
+   color. Runs server-side once per list (lazy, on first shelf read) and
+   sticks via lists.tab_color. The mix favors vibrancy over averaging
+   accuracy: hue is the circular mean (so red/red doesn't average to cyan),
+   sat/lightness are clamped into a readable band, and a small random
+   jitter keeps two lists with similar membership visually distinct.
+   ============================================================================ */
+
+function parseHexColor (hex) {
+  if (typeof hex !== 'string') return null;
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function rgbToHsl (rgb) {
+  const r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];                                  // achromatic
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r)      h = (g - b) / d + (g < b ? 6 : 0);
+  else if (max === g) h = (b - r) / d + 2;
+  else                h = (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+
+function hslToHex (h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = h / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r1 = 0, g1 = 0, b1 = 0;
+  if (hp < 1)      { r1 = c; g1 = x; }
+  else if (hp < 2) { r1 = x; g1 = c; }
+  else if (hp < 3) { g1 = c; b1 = x; }
+  else if (hp < 4) { g1 = x; b1 = c; }
+  else if (hp < 5) { r1 = x; b1 = c; }
+  else             { r1 = c; b1 = x; }
+  const m = l - c / 2;
+  const to255 = v => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+  return '#' + to255(r1) + to255(g1) + to255(b1);
+}
+
+function pickListColor (memberColors) {
+  const hsls = (memberColors || []).map(parseHexColor).filter(Boolean).map(rgbToHsl);
+  if (hsls.length === 0) {
+    /* No members yet — give the list a random pastel so it still has identity. */
+    return hslToHex(Math.random() * 360, 0.65, 0.65);
+  }
+  const sumX = hsls.reduce((a, [h]) => a + Math.cos(h * Math.PI / 180), 0);
+  const sumY = hsls.reduce((a, [h]) => a + Math.sin(h * Math.PI / 180), 0);
+  let h = Math.atan2(sumY / hsls.length, sumX / hsls.length) * 180 / Math.PI;
+  if (h < 0) h += 360;
+  let s = hsls.reduce((a, [, sat]) => a + sat, 0) / hsls.length;
+  let l = hsls.reduce((a, [, , lt]) => a + lt, 0) / hsls.length;
+
+  /* Clamp+jitter — keeps the result vibrant and readable with black text,
+     and ensures two lists with similar member colors land different spots. */
+  h = (h + (Math.random() - 0.5) * 30 + 360) % 360;
+  s = Math.min(0.85, Math.max(0.55, s + (Math.random() - 0.5) * 0.20));
+  l = Math.min(0.72, Math.max(0.55, l + (Math.random() - 0.5) * 0.10));
+  return hslToHex(h, s, l);
+}
+
+
 /* GET /api/visitor/:id/shelf — everything needed to render My Shelf in one
    response.
 
@@ -643,7 +721,7 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
   if (!visitor) return res.status(404).json({ error: 'visitor not found' });
 
   const lists = db.prepare(`
-    SELECT l.id, l.created, l.private, l.owner_visitor_id,
+    SELECT l.id, l.created, l.private, l.owner_visitor_id, l.tab_color,
            lv.slot, lv.list_name, lv.ready
     FROM list_visitors lv
     JOIN lists l ON l.id = lv.list_id
@@ -657,6 +735,7 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
     private: r.private,
     owner_visitor_id: r.owner_visitor_id,
     created: r.created,
+    tab_color: r.tab_color || null,           // lazy-filled below
     member_colors: []                         // filled below
   }));
 
@@ -678,6 +757,16 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
       colorsByList.get(r.list_id).push(r.color);
     }
     lists.forEach(l => { l.member_colors = colorsByList.get(l.id) || []; });
+
+    /* Lazy-fill lists.tab_color the first time we see a list without one.
+       Sticky after — even if members change later, the tab color stays. */
+    const setTabColor = db.prepare('UPDATE lists SET tab_color = ? WHERE id = ?');
+    lists.forEach(l => {
+      if (!l.tab_color) {
+        l.tab_color = pickListColor(l.member_colors);
+        setTabColor.run(l.tab_color, l.id);
+      }
+    });
   }
 
   /* one row per (movie key, list this visitor is on); group in JS so each

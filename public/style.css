@@ -1551,10 +1551,10 @@ html, body {
 }
 .tab-shelf-solo .tab-name { color: inherit; font-weight: 600; }
 
-/* List tabs in shelf mode — gradient bg (built from the list's member colors
-   as `--list-gradient` inline), name centered at bottom in black. */
+/* List tabs in shelf mode — solid bg painted inline from lists.tab_color
+   (server-side mix of member colors, sticky once chosen). Name centered
+   at bottom in black. */
 .tab-shelf-list {
-  background: var(--list-gradient, linear-gradient(90deg, #ffffff, #ffffff));
   color: #000000;
   text-shadow: none;
 }

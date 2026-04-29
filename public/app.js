@@ -23,7 +23,7 @@
 
    VIRTUAL IDENTITY (list mode only):
    Bare `/` doesn't generate or fetch anything. We show editable placeholders
-   — Couch#NNNNNN on the Couch tab and CouchM8#NNNNNN on the user tab — and
+   — Couch#NNNNNN on the Couch tab and CouchM8#NNN on the user tab — and
    only persist anything (visitor row, list row, slot, nickname) when the
    user does something concrete. ensureMaterialized() in SECTION 4 is the
    one-stop "promote this virtual session to a real one" call site.
@@ -88,7 +88,7 @@ let displayNames      = {};
 
 /* Virtual-mode placeholders.
    Bare `/` lands the user in couchlist mode with a blank list and no DB
-   identity. We show editable defaults — "CouchM8#NNNNNN" for the user tab,
+   identity. We show editable defaults — "CouchM8#NNN" for the user tab,
    "Couch#NNNNNN" for the couch tab — and only persist anything (visitor
    row, list row, list nickname) when the user does something concrete (adds
    a movie, types a name, etc.). The names are kept in localStorage so a
@@ -124,7 +124,7 @@ let shelfReadySnap    = null;
      3. If ?Shelf=1 → hand off to SECTION 16 (initShelf).
      4. Else, list mode: pick listId from the URL, or fall back to the
         visitor's last_list_id, or enter virtual mode (no listId; show
-        editable Couch#NNNNNN / CouchM8#NNNNNN placeholders).
+        editable Couch#NNNNNN / CouchM8#NNN placeholders).
      5. loadList() renders, setupEventListeners() wires interactions.
 
    Materialization helpers below initApp turn a virtual session into a real
@@ -221,14 +221,14 @@ function initApp() {
   });
 }
 
-/* Generate the placeholder Couch#NNNNNN / CouchM8#NNNNNN names and stash in
+/* Generate the placeholder Couch#NNNNNN / CouchM8#NNN names and stash in
    localStorage so a refresh keeps the same numbers. Returns nothing — sets
    the module-level virtualUserName / virtualListName / isVirtualList flags. */
 function enterVirtualList () {
   isVirtualList = true;
   let n = readLocalStorage('wtw_virtual_user_name');
   if (!n) {
-    n = 'CouchM8#' + sixDigits();
+    n = 'CouchM8#' + threeDigits();
     writeLocalStorage('wtw_virtual_user_name', n);
   }
   virtualUserName = n;
@@ -243,6 +243,10 @@ function enterVirtualList () {
 
 function sixDigits () {
   return String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+}
+
+function threeDigits () {
+  return String(Math.floor(Math.random() * 1000)).padStart(3, '0');
 }
 
 function readLocalStorage (k) {
@@ -1491,7 +1495,7 @@ function findCommentText(movieId, vid) {
      placeholder is the virtual Couch#NNNNNN.
    - Stub user tab — only rendered when we have no slot on the list yet
      (virtual session, or a real list we haven't joined). Shows the virtual
-     CouchM8#NNNNNN placeholder; typing commits via handleNameEntry.
+     CouchM8#NNN placeholder; typing commits via handleNameEntry.
    - Visitor tabs — one per occupied slot, in slot order (= join order, since
      server.js assigns the next free slot). Tap a tab to make it active. The
      RDY/NAW pip in the corner toggles whether that visitor's votes count
@@ -1539,7 +1543,7 @@ function renderUserTabs() {
     + '</div>';
 
   /* If there's no visitor row yet, render the user's "virtual" tab with the
-     CouchM8#NNNNNN placeholder. Once any slot exists for us, the loop below
+     CouchM8#NNN placeholder. Once any slot exists for us, the loop below
      renders the real one instead (and we suppress this stub). */
   const haveSlot = Object.values(listData.visitors).some(v => v.id === visitorId);
   if (!haveSlot) {
@@ -2607,7 +2611,7 @@ function setupEventListeners() {
       if (btn.dataset.action === 'my-shelf') {
         /* Materialize the visitor first so the shelf has an identity to
            render against. Tapping Shelf is a deliberate write intent — it
-           saves the virtual CouchM8#NNNNNN name if no name has been typed. */
+           saves the virtual CouchM8#NNN name if no name has been typed. */
         await materializeVisitor();
         window.location.href = '/?Shelf=1';
       }

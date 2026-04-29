@@ -1,29 +1,36 @@
 /* ============================================================================
-   app.js — whatdoyouwannawatch.com (flat-redesign)
+   app.js — couchlist.org
    ============================================================================
    The entire front-end. Runs in the browser. Talks to server.js via fetch().
    TMDB calls happen directly from the browser — our server never talks to TMDB.
 
-   KEY DIFFERENCE FROM v1:
-   The server now returns movies with ranks and comments INLINE on each row.
-   No more separate rankings or comments arrays to cross-reference.
-   Each movie object looks like:
-     { id, title, year, poster, added_by,
-       user1_rank: 2, user1_comment: "Great film",
-       user2_rank: 1, user2_comment: null, ... }
+   TWO MODES, ROUTED BY URL QUERY PARAMS:
 
-   Visitors are keyed by SLOT NUMBER (1-10), not visitor ID. The slot tells
-   you which columns belong to that visitor: slot 3 → user3_rank, user3_comment.
+     /                        → list mode, virtual blank list
+     /?ListId=<8>             → list mode, that list
+     /?UserId=<10>            → consume the cookie-restoring param, then load
+                                that user's last-viewed list
+     /?Shelf=1                → shelf mode (the Shelf button target)
+     /<8>                     → legacy backcompat for old path-style URLs
 
-   There is no drag-to-reorder. Instead, up/down arrow buttons swap a movie's
-   rank with the one above/below it. One click = one swap = two SQL UPDATEs.
+   In list mode the server returns each movie with every visitor's rank and
+   comment INLINE on the row, keyed by SLOT NUMBER (1-10). Slot 3 owns
+   user3_rank / user3_comment columns. mySlot tells us which slot is ours.
 
-   DATABASE TABLES (on the server, for reference):
-   visitors       — id, name, color (global, one row per person)
-   lists          — id, created (one row per list)
-   list_visitors  — list_id, slot (1-10), visitor_id (who has which slot)
-   movies         — id, list_id, tmdb_id, title, year, poster, added_by,
-                    user1_rank, user1_comment, ..., user10_rank, user10_comment
+   In shelf mode (My Shelf) we fetch a single payload from /api/visitor/:id/
+   shelf that aggregates every list this visitor is on into one master_rank
+   ordering. SECTION 16 owns this mode.
+
+   VIRTUAL IDENTITY (list mode only):
+   Bare `/` doesn't generate or fetch anything. We show editable placeholders
+   — Couch#NNNNNN on the Couch tab and CouchM8#NNNNNN on the user tab — and
+   only persist anything (visitor row, list row, slot, nickname) when the
+   user does something concrete. ensureMaterialized() in SECTION 4 is the
+   one-stop "promote this virtual session to a real one" call site.
+
+   DRAG TO REORDER:
+   Pointer drag with transforms (no clone, no arrow buttons). SECTION 8 owns
+   the scaffolding; both modes use it and branch by appMode at commit time.
    ============================================================================ */
 
 
@@ -43,27 +50,35 @@ const DEBOUNCE_MS   = 300;
 /* ============================================================================
    SECTION 2: STATE VARIABLES
    ============================================================================
-   listId           — 8-char list ID from the URL
-   visitorId        — 10-char visitor ID from the cookie
-   visitor          — { id, name, color } from server, or null if not yet named
-   listData         — everything about this list from the server:
-                      { list, visitors (keyed by slot), movies (with ranks inline) }
-   mySlot           — our slot number (1-10) on this list, or null if not joined
-   activeTab        — "couch" or a visitor ID string — whose ranking to show
-   selectedVisitors — { visitorId: true/false } — who's included in the Couch vote
-   searchResults    — array of TMDB movie objects from current search
-   expandedComment  — { movieId, visitorId } or null — which comment is expanded
-   movieDetailCache — { tmdbId: detailObject } — cached TMDB detail lookups
-   displayNames     — { visitorId: "Doug" or "Doug(2)" } — per-list display names
+   appMode           — 'list' (Couchlist) or 'shelf' (My Shelf)
+   listId            — 8-char list ID. null in shelf mode and in virtual list
+                       sessions (before materialize)
+   visitorId         — 10-char visitor ID. Always set (cookie or freshly
+                       generated); doesn't imply a DB row exists
+   visitor           — { id, name, color, last_list_id } from server, or null
+                       if no DB row for this visitorId yet
+   listData          — { list, visitors (keyed by slot), movies, your_list_name }
+                       In virtual mode, a stub with empty visitors/movies
+   shelfData         — { visitor, lists, movies } from /shelf. Shelf mode only
+   mySlot            — our slot number (1-10) on this list, or null if not joined
+   activeTab         — 'couch' / a visitor ID / 'me' / 'all' / a list ID —
+                       which view is showing. Mode-dependent
+   selectedVisitors  — { visitorId: true/false } — who's included in the Borda
+                       vote on the Couch tab
+   searchResults     — array of TMDB movie objects from current search
+   expandedComment   — { movieId, visitorId } or null — which comment is expanded
+   movieDetailCache  — { '<media>:<tmdb>': detailObject } — cached TMDB lookups
+   displayNames      — { visitorId: 'Doug' or 'Doug(2)' } — per-list display
+                       names with collisions disambiguated
    ============================================================================ */
 
-let appMode           = 'list';                                    // 'list' (Couchlist) or 'shelf' (My Shelf)
+let appMode           = 'list';
 let listId            = null;
 let visitorId         = null;
 let visitor           = null;
 let listData          = null;
-let shelfData         = null;                                      // { visitor, lists, movies } from /shelf
-let mySlot            = null;                                      // NEW: my slot (1-10) on this list
+let shelfData         = null;
+let mySlot            = null;
 let activeTab         = 'couch';
 let selectedVisitors  = {};
 let searchResults     = [];
@@ -83,25 +98,37 @@ let virtualListName = null;        // shown on the couch tab pre-materialize
 let isVirtualList   = false;       // true when listId hasn't been generated/picked
 
 /* Shelf-only state — set in shelf mode, ignored in list mode.
-   Per-tab checkbox selections kept in memory for the session only;
-   missing tab → empty Set (default unchecked). Page refresh clears it. */
+   shelfSelectedByTab — per-tab checkbox selections. Missing tab → empty Set
+                        (default unchecked). Page refresh clears it.
+   shelfSelected()    — accessor that returns the Set for the active tab.
+   shelfManageOpen    — is the Manage modal up?
+   shelfReadySnap     — { listId: ready } snapshot frozen at modal-open so
+                        the modal acts on whatever was RDY when it opened. */
 let shelfSelectedByTab = new Map();
 function shelfSelected () {
   if (!shelfSelectedByTab.has(activeTab)) shelfSelectedByTab.set(activeTab, new Set());
   return shelfSelectedByTab.get(activeTab);
 }
-let shelfManageOpen   = false;                                     // is the Manage modal up?
-let shelfReadySnap    = null;                                      // RDY snapshot taken at modal-open
+let shelfManageOpen   = false;
+let shelfReadySnap    = null;
 
 
 /* ============================================================================
    SECTION 3: INITIALIZATION — initApp()
    ============================================================================
-   1. Read URL path → listId (or generate one and redirect)
-   2. Read cookie → visitorId (or generate one)
-   3. Fetch visitor profile from server
-   4. Load the list data and render
-   5. Wire up event listeners
+   The single entry point. Runs once at page load (called from SECTION 17).
+
+     1. Parse URL: ?ListId / ?UserId / ?Shelf, plus legacy `/<8>` path.
+     2. Resolve visitorId — UserId param wins (and is then stripped from
+        the URL), otherwise the cookie, otherwise a fresh 10-char ID.
+     3. If ?Shelf=1 → hand off to SECTION 16 (initShelf).
+     4. Else, list mode: pick listId from the URL, or fall back to the
+        visitor's last_list_id, or enter virtual mode (no listId; show
+        editable Couch#NNNNNN / CouchM8#NNNNNN placeholders).
+     5. loadList() renders, setupEventListeners() wires interactions.
+
+   Materialization helpers below initApp turn a virtual session into a real
+   one lazily — first add, first name typed, first share-link tap, etc.
    ============================================================================ */
 
 function initApp() {
@@ -156,9 +183,9 @@ function initApp() {
 
   appMode = 'list';
 
-  /* Pick the listId. Explicit ?ListId or path wins; otherwise we'll resolve
-     against the visitor's last_list_id (in loadVisitorProfile), or fall back
-     to virtual mode (no list, blank state). */
+  /* Pick the listId. Explicit ?ListId or path wins; otherwise we wait for
+     loadVisitorProfile to finish and resolve against the visitor's
+     last_list_id, or fall back to virtual mode (no list, blank state). */
   if (listIdParam && /^[A-Za-z0-9]{8}$/.test(listIdParam)) {
     listId = listIdParam;
   } else if (pathListId) {
@@ -295,10 +322,16 @@ async function ensureMaterialized (nameOverride) {
 /* ============================================================================
    SECTION 4: VISITOR MANAGEMENT
    ============================================================================
-   loadVisitorProfile()       — fetch our name/color from server on startup
-   handleNameEntry(nameText)  — user typed a name and hit enter
-   handleColorChange(color)   — user picked a new color
-   restoreVisitorId(oldId)    — user pasted an old visitor ID to recover it
+   loadVisitorProfile()       — fetch our visitor row (name/color/last_list_id)
+                                from server on startup; sets visitor or null
+   handleNameEntry(text)      — user typed a name in the user tab → call
+                                ensureMaterialized to commit visitor + list
+   handleListNameEntry(text)  — user typed a nickname in the Couch tab →
+                                materialize, then PUT list-name
+   handleColorChange(color)   — user picked a new color (shelf "Color" button)
+   restoreVisitorId(oldId)    — paste an old 10-char ID to recover it (legacy
+                                paste flow; the new way is the ?UserId= link
+                                from the share modal)
    ============================================================================ */
 
 async function loadVisitorProfile() {
@@ -398,16 +431,23 @@ function hideNameWarning() {
    Fetches everything about this list from our server and updates state.
    Called on page load and after any change (add, delete, swap, comment).
 
+   Virtual-mode short-circuit: if isVirtualList (or listId is null), we
+   skip the fetch and synthesize an empty listData so renderUserTabs can
+   show the placeholder Couch tab and user tab. Any commit will run
+   ensureMaterialized first and then loadList again.
+
    Server returns:
    {
-     list:     { id, created },
-     visitors: { "1": { id, name, color, slot }, ... },   ← keyed by slot
-     movies:   [ { id, title, year, ..., user1_rank, user1_comment, ... }, ... ]
+     list:           { id, created, private, owner_visitor_id },
+     visitors:       { "1": { id, name, color, slot, ready }, ... },
+     movies:         [ { id, title, year, ..., user1_rank, user1_comment, ... } ],
+     your_list_name: <string|null>   // requester's per-list nickname
    }
+   Passing ?visitor_id=... also bumps the server-side visitors.last_list_id.
 
-   After fetching, we figure out:
+   After fetching:
    - mySlot: which slot number we have (or null if not joined)
-   - selectedVisitors: who's toggled on for the Couch vote
+   - selectedVisitors: who's toggled on for the Couch vote (mirrors RDY)
    - displayNames: collision-handled display names
    Then re-render everything.
    ============================================================================ */
@@ -473,23 +513,24 @@ function updateSearchArea() {
      it triggers around (it's a native helper for both modes). */
   if (colorDot) colorDot.style.display = 'none';
 
-  /* Reveal/hide the per-mode side buttons. List mode shows the my-shelf
-     button (jumps to /); shelf mode is wired separately in renderShelf. */
+  /* Reveal/hide the per-mode side buttons. List mode shows the Shelf
+     button (data-action="my-shelf", jumps to /?Shelf=1). Shelf mode is
+     wired separately in renderShelf. */
   document.querySelectorAll('.action-btn.list-only').forEach(b => {
     b.style.display = (appMode === 'list') ? '' : 'none';
   });
   document.querySelectorAll('.action-btn.shelf-only').forEach(b => {
     b.style.display = (appMode === 'shelf') ? '' : 'none';
   });
-  /* Tint the my-shelf button to the visitor's color (white-ish bg, dark
-     text/outline) so it reads as a "shortcut to your shelf". */
+  /* Tint the Shelf button to the visitor's color (white-ish bg, dark
+     text/outline) so it reads as a "shortcut to your shelf". Pre-
+     materialize visitors get a neutral blue. */
   const ms = document.querySelector('.action-btn.side-btn-myshelf');
   if (ms && visitor) {
     ms.style.background  = tintColor(visitor.color);
     ms.style.color       = darkenColor(visitor.color);
     ms.style.borderColor = darkenColor(visitor.color);
   } else if (ms) {
-    /* no visitor yet — neutral look */
     ms.style.background = '#ffffff';
     ms.style.color = '#0000ee';
     ms.style.borderColor = '#0000ee';
@@ -830,9 +871,9 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab
       + '</div>';
     rightHtml = '';
   } else if (isMyTab) {
-    /* Your tab: your rank in A, drag handle in B (the reverse of the
-       earlier layout). The handle gets `touch-action:none` so finger drags
-       start a drag instead of scrolling the page. */
+    /* Your tab: your rank in A, drag handle in B. The handle gets
+       `touch-action:none` so finger drags start a drag instead of
+       scrolling the page. */
     leftHtml = '<div class="entry-rank">'
       + '<span class="rank-number">' + position + '</span>'
       + '</div>';
@@ -867,9 +908,8 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab
     + (posterUrl ? '<img src="' + posterUrl + '">' : '<div class="no-poster">?</div>')
     + '</div>';
 
-  /* TITLE — just the title text now. The adder badge is gone (the adder
-     is implicit: their comment is always the first pill in the comments
-     column). The "tied" pill is gone too — see the rank cell above. */
+  /* TITLE — just the title text. The adder is implicit: their comment is
+     always the first pill in the comments column below. */
   const titleHtml = '<div class="entry-title" data-tmdb-id="' + movie.tmdb_id
     + '" data-media-type="' + mediaType + '">'
     + '<div class="entry-title-text">'
@@ -1440,14 +1480,24 @@ function findCommentText(movieId, vid) {
 /* ============================================================================
    SECTION 10: USER TABS AND COUCH TOGGLE
    ============================================================================
-   Tab bar: [ Couch List ]  [ Doug ]  [ Percy ]  [ You ]  ...
+   Tab bar layout:
 
-   Tabs after Couch are in slot order — slot 1 first, slot 10 last. Slot
-   number IS join order (server.js assigns the next free slot when a
-   visitor first joins a list), so this puts visitors left-to-right in the
-   order they joined. Your own tab sits in line with everyone else.
+     [ Couch ]  [ stub user-tab if no slot yet ]  [ Doug ]  [ Percy ]  ...  [ + ]
 
-   Click a tab → switch view to that visitor's ranking.
+   - Couch tab — leftmost, always present. Two stacked centered lines, both
+     at the same big size: list nickname on top, "couchlist" on bottom. When
+     the Couch tab is active the top line becomes an editable input —
+     focusout commits via handleListNameEntry. Pre-materialize the input
+     placeholder is the virtual Couch#NNNNNN.
+   - Stub user tab — only rendered when we have no slot on the list yet
+     (virtual session, or a real list we haven't joined). Shows the virtual
+     CouchM8#NNNNNN placeholder; typing commits via handleNameEntry.
+   - Visitor tabs — one per occupied slot, in slot order (= join order, since
+     server.js assigns the next free slot). Tap a tab to make it active. The
+     RDY/NAW pip in the corner toggles whether that visitor's votes count
+     toward the Couch Borda total. Tap your own tab again to edit your name.
+   - "+" tab — always rightmost. Tap to open the share-link modal (which
+     materializes the list first if it's still virtual).
    ============================================================================ */
 
 const NAME_MAX_LEN = 12;                          // matches the maxlength on the input
@@ -1680,14 +1730,20 @@ function hideMoviePopup() {
 
 
 /* ============================================================================
-   SECTION 12: DETAILS MODAL — export/import as one editable blob
+   SECTION 12: DETAILS MODAL — list-mode export/import (currently inert)
    ============================================================================
-   One big textarea showing the list as a markdown snapshot. User can Copy the
-   blob to the clipboard, or edit it and click Apply to merge changes back.
+   Legacy: the old INFO button opened openCopyPasteModal() with the blob
+   below. The button has been removed from the search row, so on the live
+   site this modal is unreachable in list mode. We keep the code because
+   parseBlob() is still used by the shelf Manage modal to parse a pasted
+   snapshot, and applyPasteText() is still reachable via the pendingPaste
+   sessionStorage hook in initApp (a leftover from the time when paste
+   could trigger a list/visitor handoff). Safe to delete this whole section
+   if those two consumers are removed.
 
    BLOB FORMAT (kept loose so hand-edits survive):
      # CouchList Snapshot
-     URL:       https://.../<list_id>
+     URL:       https://.../?ListId=<list_id>
      List ID:   <list_id>
      Created:   YYYY-MM-DD
      Snapshot:  YYYY-MM-DD
@@ -1704,24 +1760,24 @@ function hideMoviePopup() {
      - ranks:    Name #N, Name #N       (repeats for readability; ignored on parse)
      - Name: comment text               (only current user's comments are applied)
 
-   APPLY RULES (additive):
+   APPLY RULES (additive, when applyPasteText runs):
      - New movies always get added as the current user.
      - Comments attributed to anyone other than the current user are dropped.
      - Movie order in the textarea becomes the current user's personal ranking.
-     - If list_id differs: stash the blob, navigate to the new URL; the next
+     - If list_id differs: stash the blob, navigate to ?ListId=...; the next
        page load picks it up via sessionStorage.pendingPaste.
      - If visitor_id differs: ensure that visitor exists, try to recycle the
-       current (untouched) visitor, swap the cookie, reload; pendingPaste
-       carries the blob through.
+       current (untouched) visitor, swap the cookie, reload.
    ============================================================================ */
 
 /* ============================================================================
-   Popup sizing — visualViewport-aware (shared by all 4 popups)
+   Popup sizing — visualViewport-aware (shared by every popup)
    ============================================================================
-   Three consumers: .modal-content (INFO + How-to), .popup-content (poster
-   info), and .comment-expanded (comment popup). All use the same three
-   CSS vars — --modal-top, --modal-left, --modal-width — set on the
-   element passed in.
+   Consumers: .modal-content (How-to + shelf Manage + multi-X confirm),
+   .popup-content (poster info), .comment-expanded (comment editor),
+   .shelf-note-expanded (shelf note editor). All use the same three CSS
+   vars — --modal-top, --modal-left, --modal-width — set on the element
+   passed in. The share modal (`+` tab) uses fixed positioning instead.
 
    applyViewportLayout() sets all three at open time.
    applyViewportWidth()  sets only width + left; called on visualViewport
@@ -2080,11 +2136,13 @@ function parseBlob(text) {
 
 
 /* ============================================================================
-   applyPasteText(text) — the apply pipeline
+   applyPasteText(text) — the legacy apply pipeline
    ============================================================================
    Handles URL handoff, visitor handoff, additive movie merge, comment filter,
-   and the final bulk rank reset. Safe to call either from the Apply button
-   or from the pendingPaste hook in initApp.
+   and the final bulk rank reset. Currently only reachable via the
+   sessionStorage.pendingPaste hook in initApp (left over from the previous
+   INFO/Apply flow). No live UI calls this directly anymore — see SECTION 12
+   note. Kept because pendingPaste from older sessions could still appear.
    ============================================================================ */
 
 async function applyPasteText(text) {
@@ -2304,16 +2362,10 @@ function formatYear(releaseDate) {
   return releaseDate.split('-')[0];
 }
 
-/* SECURITY: escape user-supplied text for safe insertion into HTML.
-   The previous textContent→innerHTML trick escaped <, >, and & — but NOT
-   " or ', which meant any caller using escapeHtml inside a double-quoted
-   attribute (e.g. `style="color: ${escapeHtml(color)}"` in renderEntry)
-   could still be broken out of by a malicious value. This version handles
-   all five HTML-significant characters explicitly. The `&` substitution
-   MUST run first so we don't double-escape later substitutions. */
-/* Derived-color helpers used by the My Shelf overlay on the Couchlist page.
-   Visitor colors come in as either `#rrggbb` (from the native picker) or
-   `hsl(h,s%,l%)` (from randomColor()). We darken for text, lighten for bg. */
+/* Derived-color helpers used by the Shelf side-button tint in updateSearchArea
+   (and historically by the now-removed My Shelf overlay). Visitor colors come
+   in as either `#rrggbb` (from the native picker) or `hsl(h,s%,l%)` (from
+   randomColor()). darkenColor → text/border, tintColor → near-white bg. */
 function darkenColor(c) {
   if (!c) return '#1a1a1a';
   let m = c.match(/^hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*\d+%\s*\)$/);
@@ -2342,6 +2394,12 @@ function tintColor(c) {
   return '#f0f0f0';
 }
 
+/* SECURITY: escape user-supplied text for safe insertion into HTML.
+   Handles all five HTML-significant characters — the `"` and `'`
+   substitutions matter because we splice escapeHtml() output into
+   double-quoted attributes (e.g. `style="color: ${escapeHtml(color)}"`).
+   The `&` replacement MUST run first so later substitutions aren't
+   double-escaped. */
 function escapeHtml(text) {
   if (!text) return '';
   return String(text)
@@ -2537,9 +2595,9 @@ function setupEventListeners() {
     }
   });
 
-  /* Help + my-shelf side buttons in the search row. INFO is gone; it's
-     replaced by the per-mode side buttons (my-shelf in list mode, the
-     couch/color/move/ALL/help cluster in shelf mode). */
+  /* Search-row side buttons. List mode: Shelf (data-action my-shelf) +
+     Help. Shelf mode wires its own cluster (Couch/Color/Move/All/Help)
+     in setupShelfEventListeners. */
   document.querySelectorAll('#search-row .action-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (btn.dataset.action === 'howto') {
@@ -2593,10 +2651,8 @@ function openHowToModal() {
     + 'readonly tabindex="-1"></span> '
     + 'on your tab to join the list.</p>'
 
-    + '<p><strong>Change your color</strong> by tapping the circle '
-    + '<span class="tab-color-dot howto-demo-dot" data-howto-action="color" '
-    + 'style="background:' + escapeHtml(myColor) + '"></span> '
-    + 'next to the search bar.</p>'
+    + '<p><strong>Change your color</strong> by tapping the <strong>Shelf</strong> '
+    + 'button in the search row, then Color in shelf mode.</p>'
 
     + '<p><strong>Search for movies</strong> you want to add to the watch list in the search bar.</p>'
 
@@ -2608,8 +2664,8 @@ function openHowToModal() {
     + '<strong>' + escapeHtml(myName) + ':</strong></span> '
     + '.</p>'
 
-    + '<p>The <span class="tab tab-couch howto-demo-tab"><span class="tab-couch-text">Couch List</span></span> '
-    + 'is the consensus (Borda method) of the '
+    + '<p>The <span class="tab tab-couch howto-demo-tab"><span class="tab-couch-text">couchlist</span></span> '
+    + 'tab is the consensus (Borda method) of the '
     + '<span class="tab-ready-btn ready howto-demo-rdy">Rdy</span> people.</p>'
 
     + '<p><strong>Toggle</strong> '
@@ -2622,7 +2678,8 @@ function openHowToModal() {
 
     + '<p><strong>Remove movies</strong> you have added with the ✕ on the right.</p>'
 
-    + '<p><strong>The INFO button</strong> shows all the data, for nerds.</p>'
+    + '<p><strong>Invite someone</strong> by tapping the rightmost '
+    + '<strong>+</strong> tab to grab a share link.</p>'
 
     + '<p><strong>No security.</strong> Your ID is just a random text string. '
     + 'Anyone who sees it can be you on the site. Don\'t put anything '
@@ -2630,8 +2687,9 @@ function openHowToModal() {
 
     + '<p>Going to '
     + '<a href="https://couchlist.org/" target="_blank" rel="noopener">couchlist.org</a> '
-    + 'generates a new list and URL. Invite potential couch mates to this list by '
-    + 'sending them: <strong>' + escapeHtml(window.location.host + '/?ListId=' + listId) + '</strong></p>'
+    + 'lands you on a fresh blank list — start adding movies and the URL '
+    + 'fills in. The shareable form of this list is '
+    + '<strong>' + escapeHtml(window.location.host + '/?ListId=' + (listId || 'XXXXXXXX')) + '</strong>.</p>'
     + '</div>';
 
   showHowToModal(modal);
@@ -2727,25 +2785,36 @@ function renderShelfHowToBody(modal) {
 
 
 /* ============================================================================
-   SECTION 16: MY SHELF MODE  (added 2026-04-26 — step 4 of My Shelf rollout)
+   SECTION 16: MY SHELF MODE
    ============================================================================
-   The bare `/` URL routes here instead of generating a new list. Loads the
-   visitor's profile + shelf (master_rank list across all their lists) and
-   renders the "your" tab: every movie they've added across any list, in
-   master_rank order, with drag-to-reorder.
+   Reached via /?Shelf=1 (the Shelf button target) once the visitor has a
+   real DB row. initShelf loads the visitor profile and the /shelf payload
+   — a single response with every list this visitor is on (incl. their
+   private "solo" list) and every movie they've encountered, in master_rank
+   order. shelfData.lists carries RDY state; shelfData.movies carries
+   per-list entries with `added_here` flags.
 
-   Step 4 is intentionally minimal. Deferred to later steps:
-     - Search-and-add (auto-creates a "solo list" entry)         step 8
-     - X-to-remove (multi-list confirm)                          step 5+
-     - ALL/NONE checkbox column (used by Manage modal)           step 6
-     - Per-list tabs alongside the user tab                      step 5
-     - RDY/NAW per list                                          step 5
-     - Manage modal (replaces the old Info/copy-paste flow)      step 6
-     - List nicknames + sub-tab on the Couchlist page            step 7
-     - First-time landing card (no name, no lists yet)           step 8
+   Tab strip:
+     [ My Shelf ]  [ All ]  [ Solo? ]  [ list-tab ]  [ list-tab ]  ...
+       me            all     solo.id     list.id
+
+     - "My Shelf"  — every movie YOU added that's on at least one currently-
+                     RDY list of yours.
+     - "All"       — every movie on at least one currently-RDY list (any
+                     adder). The pip on this tab fans out RDY/NAW to every
+                     list-tab + solo.
+     - "Solo"      — your private stash. Hidden until it has at least one
+                     movie.
+     - One tab per non-private list you're on. Tapping the active list-tab
+       again swaps the label for an editable nickname input.
 
    The drag scaffolding is shared with list mode; SECTION 8 reads `appMode`
-   to decide whether to commit by movie ID (list) or shelf key (this mode).
+   and `activeTab` to decide whether to commit by master-rank keys
+   (/shelf-ranks) or per-list movie IDs (/list/:id/my-ranks).
+
+   Bouncing back to list mode: if the visitor has no DB row when shelf
+   loads (e.g. someone manually typed /?Shelf=1 with a fresh cookie),
+   loadShelf redirects to / so they can engage and materialize there.
    ============================================================================ */
 
 function initShelf () {
@@ -2797,7 +2866,8 @@ function renderShelf () {
     (shelfData.lists && shelfData.lists.some(l => l.id === activeTab));
   if (!knownTab) activeTab = 'me';
 
-  /* Hide ALL/NONE on tabs that have no checkboxes (bare-shell-ish cases). */
+  /* Reveal the All/None toggle now that we have a real shelf to act on.
+     (Always shown in shelf mode — we always have at least the My Shelf tab.) */
   const selBtn = document.querySelector('.action-btn[data-action="select-all"]');
   if (selBtn) selBtn.style.display = '';
 
@@ -2985,19 +3055,18 @@ function renderShelfTabs () {
   tabBar.innerHTML = html;
 }
 
-/* Resolve which list_id the shelf-mode "couch" button should navigate to.
+/* Resolve which list_id the shelf-mode "Couch" side button should navigate to.
    Returns null when no candidate exists (brand-new visitor with no lists). */
 function pickCouchLinkTarget () {
   if (!shelfData) return null;
 
-  /* on a real list-tab (incl. solo's actual id once it exists) — that list */
+  /* On a real list-tab (incl. solo's actual id once it exists) — that list. */
   const direct = shelfData.lists.find(l => l.id === activeTab);
   if (direct) return direct.id;
 
-  /* on All / My Shelf — last-viewed list (must still be one we're on),
-     else first joined non-solo list */
-  let lastViewed = null;
-  try { lastViewed = localStorage.getItem('wtw_last_list'); } catch (e) { /* private mode */ }
+  /* On All / My Shelf — server-side last_list_id (must still be a non-solo
+     list this visitor is on), else first joined non-solo list. */
+  const lastViewed = visitor && visitor.last_list_id;
   if (lastViewed && shelfData.lists.some(l => l.id === lastViewed && !l.private)) {
     return lastViewed;
   }
@@ -3591,16 +3660,27 @@ function setupShelfEventListeners () {
 
 
 /* ============================================================================
-   SECTION 16b: SHELF MANAGE MODAL  (step 6)
+   SECTION 16b: SHELF MANAGE MODAL
    ============================================================================
-   Replaces the old Info/copy-paste flow on shelf-mode pages. Shows:
-     - editable text blob describing the current selection (RDY state is
-       captured at modal-open and frozen for the modal's lifetime, per spec)
-     - a list of joined lists with checkboxes — these are the destinations
-       for Copy / Remove
-     - Copy/Remove buttons — operate on (selected entries) × (checked dests)
-     - Add/Create list input — joins or creates a list by 8-char ID
-     - Apply box — paste a snapshot to "become this user" or import movies
+   The shelf-mode "Move" button opens this modal. Three columns:
+
+     - LEFT  — editable snapshot blob (#manage-blob). Lists every joined
+               non-private list with its RDY snapshot, plus every selected
+               movie. RDY is frozen at modal-open via shelfReadySnap.
+     - MID   — action buttons aligned to the relevant blob lines:
+               • Change User         — read "Your ID:" line, swap cookie,
+                                       reload as that visitor.
+               • Add Couchlists      — read "## Lists" lines, join any list
+                                       you aren't on, set their nicknames.
+               • Copy/Remove movies  — only render when there's a selection;
+                                       operate on (selected entries) ×
+                                       (checked dest-list checkboxes).
+     - RIGHT — destination-list checkboxes (incl. the visitor's solo list,
+               labeled "Solo (only you)"). Default unchecked.
+
+   The user-tab X (the per-movie multi-list confirm) is rendered separately
+   in openShelfMultiRemove() further down — same #copy-paste-modal slot,
+   different markup.
    ============================================================================ */
 
 function openShelfManageModal () {

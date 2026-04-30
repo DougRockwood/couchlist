@@ -701,33 +701,7 @@ async function addMovie(tmdbMovie) {
    tab-dependent visual language — see the comment at the top of renderEntry.
    ============================================================================ */
 
-/* Push the current RDY users' colors into --rdy-gradient on :root.
-   Style.css uses this gradient as a background clipped to the shape of
-   prominent text (movie titles, rank numbers). 0 RDY → white fallback;
-   1 RDY → solid color of that user; 2+ → left-to-right gradient through
-   their colors in slot order. Called from renderList() so the gradient
-   updates whenever ready state changes. */
-function applyRdyGradient() {
-  if (!listData || !listData.visitors) return;
-  /* slot-ordered for stability — 1, 2, 3 ... */
-  const sortedSlots = Object.keys(listData.visitors).sort((a, b) => a - b);
-  const colors = sortedSlots
-    .map(slot => listData.visitors[slot])
-    .filter(v => selectedVisitors[v.id])
-    .map(v => v.color);
-  let gradient;
-  if (colors.length === 0) {
-    gradient = 'linear-gradient(90deg, #ffffff, #ffffff)';
-  } else if (colors.length === 1) {
-    gradient = 'linear-gradient(90deg, ' + colors[0] + ', ' + colors[0] + ')';
-  } else {
-    gradient = 'linear-gradient(90deg, ' + colors.join(', ') + ')';
-  }
-  document.documentElement.style.setProperty('--rdy-gradient', gradient);
-}
-
 function renderList() {
-  applyRdyGradient();
   const container = document.getElementById('movie-list');
   const movies = listData.movies.slice();                          // copy so we can sort
 
@@ -1507,34 +1481,38 @@ function renderUserTabs() {
   let html = '';
 
   /* Couch tab — always first. Two stacked centered lines, BOTH at the
-     same large size now:
-       top    — list nickname (editable when this tab is active; falls back
+     same large size:
+       top    — "couchlist" (the brand label)
+       bottom — list nickname (editable when this tab is active; falls back
                 to the virtual Couch#NNN placeholder pre-materialize)
-       bottom — "couchlist"
-     Both paint with the RDY-gradient via background-clip:text on the
-     inner spans. The black fill stays on .tab-couch itself. */
+     Both paint in the list's saved tab_color (mixed from member colors,
+     server-side). Threaded down via --list-tab-color so a single inline
+     style on the parent paints both lines. Falls back to white when the
+     list is virtual / has no saved color yet. */
   const savedListName = (listData && listData.your_list_name) || '';
   const placeholderListName = virtualListName || '';
   const couchActive = (activeTab === 'couch');
+  const listTabColor = (listData && listData.list && listData.list.tab_color) || '#ffffff';
 
-  let topLine;
+  let nicknameLine;
   if (couchActive) {
-    topLine = '<input class="tab-name-input tab-couch-name-input" type="text" '
+    nicknameLine = '<input class="tab-name-input tab-couch-name-input" type="text" '
       + 'value="' + escapeHtml(savedListName) + '" '
       + 'placeholder="' + escapeHtml(placeholderListName) + '" '
       + 'autocomplete="off" maxlength="12" data-list-name-input="1">';
   } else {
     const shown = savedListName || placeholderListName;
-    topLine = shown
+    nicknameLine = shown
       ? '<span class="tab-couch-text tab-couch-nickname">' + escapeHtml(shown) + '</span>'
       : '';
   }
 
   html += '<div class="tab tab-couch' + (couchActive ? ' tab-active' : '') + '" '
-    + 'data-tab="couch">'
+    + 'data-tab="couch" '
+    + 'style="--list-tab-color:' + escapeHtml(listTabColor) + ';">'
     + '<div class="tab-couch-stack">'
-    +   topLine
     +   '<span class="tab-couch-text">couchlist</span>'
+    +   nicknameLine
     + '</div>'
     + '</div>';
 

@@ -1258,6 +1258,15 @@ app.get('/api/list/:id', (req, res) => {
       .run(listId, requesterId);
   }
 
+  /* Lazy-fill lists.tab_color so the list-page Couch tab can paint its
+     stacked label in the same mixed color the shelf list-tab uses. Same
+     sticky semantics as the shelf path. */
+  if (!list.tab_color) {
+    const memberColors = Object.values(visitors).map(v => v.color).filter(Boolean);
+    list.tab_color = pickListColor(memberColors);
+    db.prepare('UPDATE lists SET tab_color = ? WHERE id = ?').run(list.tab_color, listId);
+  }
+
   res.json({ list, visitors, movies, your_list_name: yourListName });
 });
 

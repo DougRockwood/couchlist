@@ -43,14 +43,12 @@
   padding: 0;
 }
 
-/* RDY-gradient: a left-to-right gradient through all RDY users' colors,
-   set on :root by applyRdyGradient() in app.js after every renderList().
-   Currently consumed only by the Couch tab's "Couch List" label, where
-   the gradient is clipped to the shape of the text on a black tab body.
-   Defaults to white so the label is never invisible if no one is ready
-   (or if JS hasn't run yet). */
+/* The Couch tab's two stacked labels paint in the list's saved tab_color
+   (server-side mix of member colors). Each tab passes its color down via
+   `--list-tab-color` inline; the default below keeps the help-modal demo
+   readable since it doesn't have a real list to draw a color from. */
 :root {
-  --rdy-gradient: linear-gradient(90deg, #ffffff, #ffffff);
+  --list-tab-color: #ffffff;
 }
 
 html, body {
@@ -289,11 +287,11 @@ html, body {
   color: #333;
 }
 
-/* Couch tab: big label centered. Two stacked centered lines (nickname on
-   top + "Couch List" on bottom), both painted with the RDY-gradient via
-   background-clip:text on the inner spans. The gradient can't live on
-   .tab-couch itself — that'd hide the black fill — so the black lives on
-   the parent and the gradient on the child span. */
+/* Couch tab: big label centered. Two stacked centered lines:
+   "couchlist" on top + the list nickname on bottom. Both paint in the
+   list's saved tab_color, threaded down via --list-tab-color on the
+   parent .tab-couch (server-side mix of member colors). The black tab
+   background stays here on .tab-couch. */
 .tab-couch {
   display: inline-flex;
   align-items: center;
@@ -316,35 +314,24 @@ html, body {
 }
 
 .tab-couch-text {
-  background: var(--rdy-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--list-tab-color, #ffffff);
 }
 
 .tab-couch-nickname {
-  /* Doug's redesign: list-name on top is the SAME size as "couchlist"
-     below it — both are the big stacked label. The list name stays solid
-     white (overrides the inherited tab-couch-text gradient clip), so it
-     reads cleanly on the black tab even when an RDY user picks a dark
-     color that would otherwise drag the gradient toward black. The brand
-     "couchlist" word below keeps the gradient. */
+  /* Nickname underneath "couchlist" — same big size, same list-tab color.
+     The 'tab-couch-text' class on the same span already paints the color;
+     these rules just constrain layout so the nickname can ellipsize. */
   font-weight: 600;
   letter-spacing: 0.3px;
-  margin-bottom: 2px;
+  margin-top: 2px;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  background: none;
-  color: #ffffff;
-  -webkit-text-fill-color: #ffffff;
 }
 
-/* Editable input on the active Couch tab. Solid white to match the
-   nickname span — the gradient-clip trick was making the input invisible
-   when an RDY user's color dragged the gradient toward black. Letting it
-   shrink to content keeps the tab from ballooning when empty. */
+/* Editable input on the active Couch tab. Inherits the same list-tab-color
+   the nickname span uses, so on/off-active states match. */
 .tab-couch-name-input {
   display: inline-block;
   background: transparent;
@@ -354,19 +341,18 @@ html, body {
   font-weight: 600;
   letter-spacing: 0.3px;
   text-align: center;
-  color: #ffffff;
-  -webkit-text-fill-color: #ffffff;
-  caret-color: #ffffff;
+  color: var(--list-tab-color, #ffffff);
+  caret-color: var(--list-tab-color, #ffffff);
   field-sizing: content;
   width: auto;
   min-width: 1ch;
   max-width: 100%;
   padding: 0 2px;
-  margin-bottom: 2px;
+  margin-top: 2px;
 }
 .tab-couch-name-input::placeholder {
-  -webkit-text-fill-color: rgba(255, 255, 255, 0.45);
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--list-tab-color, #ffffff);
+  opacity: 0.55;
 }
 .tab-couch-name-input:focus {
   background: rgba(255, 255, 255, 0.12);

@@ -138,16 +138,20 @@ function initApp() {
        /?UserId=<10>            → set cookie, then load that user's last list
        /?ListId=&UserId=        → both (UserId restores identity in incognito)
        /?Shelf=1                → shelf mode (Shelf button target)
+       /?New=1                  → fresh virtual list (skip last_list_id resolve);
+                                  target of the shelf-mode "+" tab
        /                        → couchlist mode, virtual blank list
        /<8>                     → legacy backcompat, same as ?ListId=<8>
 
-     UserId is consumed once: cookie is set, then the param is stripped from
-     the URL via history.replaceState so the "secret" link isn't left visible
-     in the address bar after one use. */
+     UserId and New are consumed once: their effect is applied, then the
+     params are stripped from the URL via history.replaceState so they don't
+     get re-applied on reload (and the "secret" UserId link isn't left
+     visible in the address bar). */
   const params = new URLSearchParams(window.location.search);
   const userIdParam = params.get('UserId');
   const listIdParam = params.get('ListId');
   const shelfParam  = params.get('Shelf');
+  const newParam    = params.get('New');
 
   const urlPath = window.location.pathname.replace(/^\//, '');
   const pathListId =
@@ -167,10 +171,13 @@ function initApp() {
     }
   }
 
-  /* Strip UserId from URL after consuming. Keep ListId/Shelf if present. */
-  if (userIdParam) {
+  /* Strip UserId / New from the URL after consuming. Keep ListId/Shelf if
+     present. New is a one-shot trigger — once we've decided to skip the
+     last_list_id resolve below, we don't want a reload to repeat it. */
+  if (userIdParam || newParam) {
     const clean = new URLSearchParams(params);
     clean.delete('UserId');
+    clean.delete('New');
     const qs = clean.toString();
     history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : ''));
   }
@@ -197,8 +204,10 @@ function initApp() {
 
   loadVisitorProfile().then(() => {
     /* If no listId yet and we found a stored last-list for this visitor,
-       use it. Otherwise we go virtual. */
-    if (!listId && visitor && visitor.last_list_id
+       use it. Otherwise we go virtual. The ?New=1 path forces a fresh
+       virtual list — the shelf "+" tab uses it to start a brand-new list
+       without losing the visitor cookie. */
+    if (!newParam && !listId && visitor && visitor.last_list_id
         && /^[A-Za-z0-9]{8}$/.test(visitor.last_list_id)) {
       listId = visitor.last_list_id;
     }
@@ -3204,6 +3213,13 @@ function renderShelfTabs () {
     html += '</div>';
   });
 
+  /* "+" tab — always rightmost. Tap to drop into couch mode on a brand
+     new virtual list, preserving the visitor cookie. Mirrors the list-mode
+     plus-tab visually, different action. */
+  html += '<div class="tab tab-plus" data-shelf-tab="plus" aria-label="Start a new list">'
+    + '<span class="tab-plus-icon">+</span>'
+    + '</div>';
+
   tabBar.innerHTML = html;
 }
 
@@ -3731,6 +3747,22 @@ function setupShelfEventListeners () {
     if (remove) {
       e.stopPropagation();
       shelfRemoveFromList(remove.dataset.listId, parseInt(remove.dataset.movieId));
+      return;
+    }
+
+    /* "+" tab → couch mode on a brand new virtual list. Clearing the
+       virtual placeholder names forces fresh Couch#NNN / CouchM8#NNN values
+       on the destination so it actually feels new instead of recycling the
+       previous virtual session. ?New=1 tells initApp to skip the
+       last_list_id resolve so we land in virtual mode even though the
+       visitor cookie already knows about other lists. */
+    const plusTab = e.target.closest('.tab[data-shelf-tab="plus"]');
+    if (plusTab) {
+      e.stopPropagation();
+      clearLocalStorage('wtw_virtual_user_name');
+      clearLocalStorage('wtw_virtual_list_name');
+      clearLocalStorage('wtw_virtual_user_color');
+      window.location.href = '/?New=1';
       return;
     }
 

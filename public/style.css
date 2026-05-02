@@ -330,16 +330,23 @@ html, body {
   transform: translateY(25%);
 }
 
-/* Nickname — 18px, absolutely positioned at the top of the tab so
+/* Nickname — 14px, absolutely positioned in the top of the tab so
    "Couchlist" can stay at the visual center below it. The center is
    shifted 16px LEFT of the tab's true center to compensate for the
    28px+4px count badge in the top-right corner — that leaves the
-   nickname optically centered in the space the badge doesn't occupy. */
+   nickname optically centered in the space the badge doesn't occupy.
+   Vertical: anchored top:4px with height matching the 28px badge and
+   flex-centered, so the nickname's text baseline lines up with the
+   number inside the count badge. */
 .tab-couch-nickname {
   position: absolute;
-  top: 3px;
+  top: 4px;
   left: calc(50% - 16px);
   transform: translateX(-50%);
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 14px;
   font-weight: 500;
   max-width: calc(100% - 40px);       /* leave room for tab padding + corner badge */
@@ -353,11 +360,11 @@ html, body {
    (.tab-couch .tab-couch-name-input) to outweigh the later, more general
    .tab-name-input rule below. */
 .tab-couch .tab-couch-name-input {
-  display: inline-block;
   position: absolute;                 /* same top anchor as .tab-couch-nickname, shifted left to clear the count badge */
-  top: 3px;
+  top: 4px;
   left: calc(50% - 16px);
   transform: translateX(-50%);
+  height: 28px;                       /* match the badge's 28px so the input's text baseline lines up with the count number */
   background: transparent;
   border: none;
   outline: none;
@@ -1532,36 +1539,50 @@ html, body {
 }
 .tab-shelf-all .tab-name { color: #ffffff; font-weight: 600; }
 
-/* "My Shelf" tab — user's color background, two stacked lines:
-   "<name>'s" on top (editable username + non-editable apostrophe-s),
-   "Shelf" on bottom. NO RDY pip. We override the .tab-user inline-grid
-   here because we want a centered flex column, not the dot/dot/name
-   grid the visitor tabs use. Doublewide so it mirrors the Couchlist tab
-   on the list-mode page. */
+/* "My Shelf" tab — user's color background, mirrors the Couchlist tab
+   layout on the list-mode page: big "Shelf" label centered, "<name>'s"
+   pinned to a 28px band at the top so the username's text baseline lines
+   up with the count badge in the top-right. NO RDY pip. We override the
+   .tab-user inline-grid here because we want a centered flex layout, not
+   the dot/dot/name grid the visitor tabs use. */
 .tab-shelf-myshelf {
-  position: relative;                 /* anchor for .tab-count-float badge */
+  position: relative;                 /* anchor for .tab-count-float badge + name-row */
   display: inline-flex;
-  flex-direction: column;
-  align-items: center;
+  align-items: center;                /* vertically centers .tab-shelf-myshelf-stack → centers "Shelf" */
   justify-content: center;
   min-width: 136px;
   padding: 4px 8px;
 }
+
+/* "Shelf" alone in the centered stack — the name-row is taken out of
+   normal flow (absolute, pinned to the top) so the label stays at the
+   tab's vertical center regardless of the username row. */
 .tab-shelf-myshelf-stack {
   display: flex;
   flex-direction: column;
   align-items: center;
-  width: 100%;
+  justify-content: center;
   line-height: 1.05;
+  width: 100%;
 }
+
+/* Name row (editable username + 's) — 14px, absolutely positioned in a
+   28px band at the top with the same center-offset and flex-centering as
+   .tab-couch-nickname, so the username's text baseline lines up with the
+   count number in the top-right badge. */
 .tab-shelf-myshelf-name-row {
+  position: absolute;
+  top: 4px;
+  left: calc(50% - 16px);
+  transform: translateX(-50%);
+  height: 28px;
   display: inline-flex;
-  align-items: baseline;
-  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  max-width: calc(100% - 40px);       /* leave room for tab padding + corner badge */
   font-weight: 600;
   font-size: 14px;
   color: #ffffff;
-  margin-bottom: 2px;
   overflow: hidden;
 }
 .shelf-username-input {
@@ -1593,10 +1614,15 @@ html, body {
   color: #ffffff;
   flex: 0 0 auto;
 }
+/* "Shelf" label — 25px to match the "couchlist" label on the Couch tab.
+   translateY(25%) shifts it 25% of its own height below the flex-centered
+   position, biasing it toward the bottom so the username row at the top
+   has more breathing room — exact mirror of .tab-couch-text. */
 .tab-shelf-myshelf-label {
   color: #ffffff;
   font-weight: 600;
-  font-size: 15.4px;                  /* +10% over the default 14px */
+  font-size: 25px;
+  transform: translateY(25%);
 }
 
 /* "Solo" tab — white bg, user-color border, user-color text. RDY pip

@@ -1768,6 +1768,87 @@ app.put('/api/list/:id/ready', (req, res) => {
 
 
 /* ============================================================================
+   SECTION 10f: REMOVE VISITOR FROM LIST — DELETE /api/list/:id/visitors/:vid
+   ============================================================================
+   Frees a visitor's slot on a list. Guard: the visitor must have added
+   zero movies to this list. Used by the red-✕ count-badge on a user tab in
+   list mode. The visitors table row is global identity and is NOT touched —
+   only this list_visitors mapping plus the userN_rank/userN_comment columns
+   on every movie of this list (so the freed slot is clean for the next
+   joiner). Anyone with the list URL can call this; the 0-movies guard is
+   what keeps it from being destructive, and the same trust model already
+   applies elsewhere in the API.
+   ============================================================================ */
+
+app.delete('/api/list/:id/visitors/:vid', (req, res) => {
+  const listId = req.params.id;
+  const targetId = req.params.vid;
+
+  const slotRow = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+  ).get(listId, targetId);
+  if (!slotRow) return res.status(404).json({ error: 'visitor not on this list' });
+
+  const added = db.prepare(
+    'SELECT COUNT(*) AS n FROM movies WHERE list_id = ? AND added_by = ?'
+  ).get(listId, targetId).n;
+  if (added > 0) {
+    return res.status(409).json({ error: 'visitor has added movies; cannot remove' });
+  }
+
+  /* SECURITY: slotRow.slot comes from the DB and was bounded to 1..10 by
+     CHECK at insert time, so concatenating it into the column name is safe.
+     Same pattern the swap/move endpoints use after their input validation. */
+  const rankCol = 'user' + slotRow.slot + '_rank';
+  const cmtCol  = 'user' + slotRow.slot + '_comment';
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      'UPDATE movies SET ' + rankCol + ' = NULL, ' + cmtCol + ' = NULL WHERE list_id = ?'
+    ).run(listId);
+    db.prepare(
+      'DELETE FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+    ).run(listId, targetId);
+  });
+  tx();
+
+  res.json({ ok: true });
+});
+
+
+/* ============================================================================
+   SECTION 10g: DELETE EMPTY LIST — DELETE /api/list/:id
+   ============================================================================
+   Removes a list entirely IF it contains zero movies. Wipes the
+   list_visitors mappings for that list as well. Used by the red-✕ count
+   badge on a list tab in shelf mode. Same loose access model as the
+   visitor-removal endpoint above: 0-movies is the sole gate.
+   ============================================================================ */
+
+app.delete('/api/list/:id', (req, res) => {
+  const listId = req.params.id;
+
+  const list = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
+  if (!list) return res.status(404).json({ error: 'list not found' });
+
+  const count = db.prepare(
+    'SELECT COUNT(*) AS n FROM movies WHERE list_id = ?'
+  ).get(listId).n;
+  if (count > 0) {
+    return res.status(409).json({ error: 'list still has movies; cannot delete' });
+  }
+
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM list_visitors WHERE list_id = ?').run(listId);
+    db.prepare('DELETE FROM lists WHERE id = ?').run(listId);
+  });
+  tx();
+
+  res.json({ ok: true });
+});
+
+
+/* ============================================================================
    SECTION 10e: SET LIST NICKNAME — PUT /api/list/:id/list-name  (step 7)
    ============================================================================
    Per-user nickname for a list (max 12 chars). Lives in list_visitors so

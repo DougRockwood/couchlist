@@ -93,9 +93,10 @@ let displayNames      = {};
    row, list row, list nickname) when the user does something concrete (adds
    a movie, types a name, etc.). The names are kept in localStorage so a
    refresh during this virtual state shows the same numbers. */
-let virtualUserName = null;        // shown on the user tab pre-materialize
-let virtualListName = null;        // shown on the couch tab pre-materialize
-let isVirtualList   = false;       // true when listId hasn't been generated/picked
+let virtualUserName  = null;       // shown on the user tab pre-materialize
+let virtualUserColor = null;       // tab background pre-materialize (random hsl)
+let virtualListName  = null;       // shown on the couch tab pre-materialize
+let isVirtualList    = false;      // true when listId hasn't been generated/picked
 
 /* Shelf-only state — set in shelf mode, ignored in list mode.
    shelfSelectedByTab — per-tab checkbox selections. Missing tab → empty Set
@@ -233,6 +234,17 @@ function enterVirtualList () {
   }
   virtualUserName = n;
 
+  /* Pre-pick a random user color so the virtual tab shows something fun
+     instead of placeholder gray. Persisted in localStorage so a refresh
+     keeps the same color, and the same color rolls into the visitor row
+     when materializeVisitor() commits. */
+  let c = readLocalStorage('wtw_virtual_user_color');
+  if (!c) {
+    c = randomColor();
+    writeLocalStorage('wtw_virtual_user_color', c);
+  }
+  virtualUserColor = c;
+
   let l = readLocalStorage('wtw_virtual_list_name');
   if (!l) {
     l = 'Couch#' + threeDigits();
@@ -278,16 +290,17 @@ async function materializeVisitor (nameOverride) {
     || (visitor && visitor.name)
     || virtualUserName;
   if (!wantName) return;
-  const wantColor = (visitor && visitor.color) || randomColor();
+  const wantColor = (visitor && visitor.color) || virtualUserColor || randomColor();
   const resp = await fetch(API + '/visitor/' + visitorId, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: wantName, color: wantColor })
   });
   visitor = await resp.json();
-  /* Once committed, drop the localStorage placeholder so future virtual
-     sessions (different cookie) get fresh numbers. */
+  /* Once committed, drop the localStorage placeholders so future virtual
+     sessions (different cookie) get fresh numbers and a fresh color. */
   clearLocalStorage('wtw_virtual_user_name');
+  clearLocalStorage('wtw_virtual_user_color');
 }
 
 /* Promote a virtual session into a real one. Called before any DB write that
@@ -1507,11 +1520,17 @@ function renderUserTabs() {
       : '';
   }
 
+  /* Total movies on this list — shown as the floating top-right badge on
+     the Couch tab. Always numeric (never the red ✕): the Couch view itself
+     isn't deletable, and an empty list is removed from shelf mode instead. */
+  const couchCount = (listData && listData.movies) ? listData.movies.length : 0;
+
   html += '<div class="tab tab-couch' + (couchActive ? ' tab-active' : '') + '" '
     + 'data-tab="couch" '
     + 'style="--list-tab-color:' + escapeHtml(listTabColor) + ';">'
+    + '<span class="tab-count tab-count-float">' + couchCount + '</span>'
     + '<div class="tab-couch-stack">'
-    +   '<span class="tab-couch-text">couchlist</span>'
+    +   '<span class="tab-couch-text">Couchlist</span>'
     +   nicknameLine
     + '</div>'
     + '</div>';
@@ -1524,7 +1543,7 @@ function renderUserTabs() {
     const meActive = (activeTab === visitorId);
     const meTabClasses = ['tab', 'tab-user', 'tab-mine'];
     if (meActive) meTabClasses.push('tab-active');
-    const userColor = (visitor && visitor.color) || '#cccccc';
+    const userColor = (visitor && visitor.color) || virtualUserColor || '#cccccc';
     const valueText = (visitor && visitor.name) || '';
     const placeholder = virtualUserName || 'Type your name';
 
@@ -1562,6 +1581,11 @@ function buildVisitorTab(v, isMe) {
   const isActive = (activeTab === v.id);
   const isSelected = selectedVisitors[v.id] !== false;
 
+  /* Count of movies this visitor added on the current list. Drives the
+     top-right tab badge: positive = number, zero = red ✕ that confirms
+     and removes the (movie-less) visitor from this list. */
+  const addedCount = listData.movies.filter(m => m.added_by === v.id).length;
+
   const classes = ['tab', 'tab-user'];
   if (isActive) classes.push('tab-active');
   if (!isSelected) classes.push('tab-dimmed');
@@ -1571,6 +1595,19 @@ function buildVisitorTab(v, isMe) {
     + 'style="background:' + escapeHtml(v.color) + '">';
   html += '<span class="tab-ready-btn ' + (isSelected ? 'ready' : 'not-ready') + '">'
     + (isSelected ? 'Rdy' : 'Naw') + '</span>';
+
+  /* Count badge / delete-X. The numeric form is informational and falls
+     through to the tab-body click below (switches tabs as normal); the X
+     form is intercepted in the tab-bar click handler by its
+     .tab-count-empty class. */
+  if (addedCount === 0) {
+    html += '<span class="tab-count tab-count-empty" '
+      + 'data-action="delete-visitor" data-visitor-id="' + escapeHtml(v.id) + '" '
+      + 'title="Remove this empty user">✕</span>';
+  } else {
+    html += '<span class="tab-count">' + addedCount + '</span>';
+  }
+
   if (isMe && isActive) {
     /* Your own tab, currently active → name row becomes an editable input.
        First tap on your own tab just activates it (via the span branch
@@ -1621,6 +1658,85 @@ async function handleReadyToggle(tabVisitorId) {
     });
   } catch (e) { /* optimistic update stays even if network fails */ }
   loadList();
+}
+
+
+/* ============================================================================
+   SECTION 10g: REMOVE VISITOR / DELETE LIST  (added 2026-04-30 with the
+                count badge — see project_visual_language / count_badge)
+   ============================================================================
+   The red ✕ on a tab calls one of two confirm flows. List-mode user-tab X
+   removes the visitor's list_visitors row (server re-checks the
+   "no movies added" guard). Shelf-mode list-tab X drops the whole list
+   (server re-checks "no movies"). The visitor record itself is global and
+   never deleted by either path.
+   ============================================================================ */
+
+function confirmDeleteVisitor (targetVisitorId) {
+  if (!listData) return;
+  const target = Object.values(listData.visitors).find(v => v.id === targetVisitorId);
+  if (!target) return;
+  const name = displayNames[target.id] || target.name || 'this user';
+  const msg = 'Remove ' + name + ' from this list? They have no movies on it. '
+    + '(Their identity isn’t deleted; they can rejoin any time.)';
+  if (!window.confirm(msg)) return;
+  deleteVisitorFromList(targetVisitorId);
+}
+
+async function deleteVisitorFromList (targetVisitorId) {
+  try {
+    const resp = await fetch(
+      API + '/list/' + listId + '/visitors/' + targetVisitorId,
+      { method: 'DELETE' }
+    );
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      window.alert('Could not remove: ' + (body.error || resp.statusText));
+      return;
+    }
+  } catch (e) {
+    window.alert('Network error — please retry.');
+    return;
+  }
+
+  /* If the viewer just removed themselves (or whoever they were viewing),
+     fall back to the Couch tab so we don't render against a missing slot. */
+  if (targetVisitorId === visitorId) activeTab = 'couch';
+  if (activeTab === targetVisitorId) activeTab = 'couch';
+  loadList();
+}
+
+function confirmDeleteList (targetListId) {
+  if (!shelfData) return;
+  const target = shelfData.lists.find(l => l.id === targetListId);
+  if (!target) return;
+  const label = (target.list_name && target.list_name.trim())
+    || (target.private ? 'your Solo list' : 'this list');
+  const scope = target.private
+    ? 'It only contains your private picks.'
+    : 'Everyone on the list will lose it.';
+  const msg = 'Delete ' + label + '? It has no movies on it. ' + scope;
+  if (!window.confirm(msg)) return;
+  deleteEmptyList(targetListId);
+}
+
+async function deleteEmptyList (targetListId) {
+  try {
+    const resp = await fetch(API + '/list/' + targetListId, { method: 'DELETE' });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      window.alert('Could not delete: ' + (body.error || resp.statusText));
+      return;
+    }
+  } catch (e) {
+    window.alert('Network error — please retry.');
+    return;
+  }
+
+  /* If the viewer was looking at the just-deleted list, reset to the
+     "My Shelf" tab — the safest landing spot in shelf mode. */
+  if (activeTab === targetListId) activeTab = 'me';
+  if (typeof loadShelf === 'function') loadShelf();
 }
 
 
@@ -2440,6 +2556,16 @@ function setupEventListeners() {
       return;
     }
 
+    /* Red ✕ count-badge → confirm-and-remove the (movie-less) visitor.
+       Numeric .tab-count (no -empty class) is informational; clicks fall
+       through to the tab-body branch and just switch tabs. */
+    const deleteX = e.target.closest('.tab-count.tab-count-empty');
+    if (deleteX && deleteX.dataset.action === 'delete-visitor') {
+      e.stopPropagation();
+      confirmDeleteVisitor(deleteX.dataset.visitorId);
+      return;
+    }
+
     /* "+" tab → share-link modal (no active-view change) */
     const plusTab = e.target.closest('.tab-plus');
     if (plusTab) { openShareModal(); return; }
@@ -2642,7 +2768,7 @@ function openHowToModal() {
     + '<strong>' + escapeHtml(myName) + ':</strong></span> '
     + '.</p>'
 
-    + '<p>The <span class="tab tab-couch howto-demo-tab"><span class="tab-couch-text">couchlist</span></span> '
+    + '<p>The <span class="tab tab-couch howto-demo-tab"><span class="tab-couch-text">Couchlist</span></span> '
     + 'tab is the consensus (Borda method) of the '
     + '<span class="tab-ready-btn ready howto-demo-rdy">Rdy</span> people.</p>'
 
@@ -2955,16 +3081,42 @@ function renderShelfTabs () {
     ? shelfData.movies.some(m => m.list_entries.some(le => le.list_id === solo.id))
     : false;
 
+  /* Helper — count movies on a given list_id by walking
+     shelfData.movies[].list_entries. Same numbers the count badges show. */
+  const movieCountForList = (lid) =>
+    shelfData.movies.reduce((n, m) =>
+      n + (m.list_entries.some(le => le.list_id === lid) ? 1 : 0), 0);
+
+  /* Per-tab "movies you'd see clicking this" counts. Doug's rule: every
+     tab in shelf mode carries a count badge in the top-right that matches
+     the actual rendered list, so RDY toggling visibly updates the
+     My Shelf and All numbers. Filters here mirror renderShelfMovieList:
+       - My Shelf  → movies you added AND that live on at least one RDY list
+       - All       → movies on at least one RDY list (any adder) */
+  const rdyListIds = new Set();
+  shelfData.lists.forEach(l => { if (l.ready) rdyListIds.add(l.id); });
+  const onAnyRdyList = (m) => m.list_entries.some(le => rdyListIds.has(le.list_id));
+  const myShelfCount = shelfData.movies
+    .filter(m => m.added_by_me && onAnyRdyList(m))
+    .length;
+  const allCount = shelfData.movies
+    .filter(onAnyRdyList)
+    .length;
+
   /* "My Shelf" tab — leftmost, doublewide (mirrors the Couchlist tab in
      list mode). User-color bg, no RDY pip. Two stacked lines: the user's
      own name on top with a non-editable "'s" suffix (so it reads
      "Doug's"), and "Shelf" centered below. The username input commits on
-     focusout / Enter via the listener in setupShelfEventListeners. */
+     focusout / Enter via the listener in setupShelfEventListeners.
+     The count badge is the floating variant — My Shelf overrides the
+     .tab-user grid for a centered flex stack, so an in-flow grid-cell
+     badge would shoulder the stack off-center. */
   const userBg = v.color ? ('background:' + escapeHtml(v.color) + ';') : '';
   const userName = v.name || '';
   let html = '<div class="tab tab-user tab-shelf-myshelf tab-mine'
     + (activeTab === 'me' ? ' tab-active' : '')
     + '" data-shelf-tab="me" style="' + userBg + '">'
+    + '<span class="tab-count tab-count-float">' + myShelfCount + '</span>'
     + '<div class="tab-shelf-myshelf-stack">'
     +   '<span class="tab-shelf-myshelf-name-row">'
     +     '<input class="tab-name-input shelf-username-input" type="text" '
@@ -2988,14 +3140,20 @@ function renderShelfTabs () {
     +   'data-shelf-rdy-all="1">'
     +   (allRdy ? 'Rdy' : 'Naw')
     + '</span>'
+    + '<span class="tab-count">' + allCount + '</span>'
     + '<span class="tab-name">All</span>'
     + '</div>';
 
   /* "Solo" tab — only renders if the visitor's solo list exists AND has
-     at least one movie. (Solo is created lazily on first /solo-add.) */
+     at least one movie. (Solo is created lazily on first /solo-add.)
+     Because the soloHasMovies guard above is exactly "count > 0", the
+     count badge here is always numeric — the red ✕ path can never trigger,
+     so we render it as a plain numeric span instead of going through
+     buildShelfCountBadge. */
   if (solo && soloHasMovies) {
     const userColor = v.color || '#0000ee';
     const isActive = activeTab === solo.id;
+    const soloCount = movieCountForList(solo.id);
     html += '<div class="tab tab-user tab-shelf-solo'
       + (isActive ? ' tab-active' : '')
       + (solo.ready ? '' : ' tab-dimmed')
@@ -3005,6 +3163,7 @@ function renderShelfTabs () {
       +   'data-shelf-rdy-list="' + escapeHtml(solo.id) + '">'
       +   (solo.ready ? 'Rdy' : 'Naw')
       + '</span>'
+      + '<span class="tab-count">' + soloCount + '</span>'
       + '<span class="tab-name">Solo</span>'
       + '</div>';
   }
@@ -3020,6 +3179,7 @@ function renderShelfTabs () {
     const isActive = activeTab === l.id;
     const ready   = l.ready;
     const tabColor = l.tab_color || '#cccccc';
+    const count   = movieCountForList(l.id);
 
     html += '<div class="tab tab-user tab-shelf-list'
       + (isActive ? ' tab-active' : '')
@@ -3029,7 +3189,8 @@ function renderShelfTabs () {
       + '<span class="tab-ready-btn ' + (ready ? 'ready' : 'not-ready') + '" '
       +   'data-shelf-rdy-list="' + escapeHtml(l.id) + '">'
       +   (ready ? 'Rdy' : 'Naw')
-      + '</span>';
+      + '</span>'
+      + buildShelfCountBadge(l.id, count);
 
     if (isActive) {
       html += '<input class="tab-name-input shelf-list-name-input" type="text" '
@@ -3044,6 +3205,18 @@ function renderShelfTabs () {
   });
 
   tabBar.innerHTML = html;
+}
+
+/* Shared count-badge builder for shelf-mode tabs. count > 0 → numeric
+   info-only pill; count === 0 → red ✕ that calls the delete-list confirm
+   flow via the tab-bar click handler. */
+function buildShelfCountBadge (listId, count) {
+  if (count === 0) {
+    return '<span class="tab-count tab-count-empty" '
+      + 'data-action="delete-list" data-list-id="' + escapeHtml(listId) + '" '
+      + 'title="Delete this empty list">✕</span>';
+  }
+  return '<span class="tab-count">' + count + '</span>';
 }
 
 /* Resolve which list_id the shelf-mode "Couch" side button should navigate to.
@@ -3538,6 +3711,16 @@ function setupShelfEventListeners () {
     if (rdy) {
       e.stopPropagation();
       shelfToggleReady(rdy.dataset.shelfRdyList);
+      return;
+    }
+
+    /* Red ✕ count-badge on a shelf tab (solo or list) → confirm-and-delete
+       the empty list. Numeric .tab-count without -empty is informational
+       and falls through to the tab-switch handler below. */
+    const shelfDeleteX = e.target.closest('.tab-count.tab-count-empty');
+    if (shelfDeleteX && shelfDeleteX.dataset.action === 'delete-list') {
+      e.stopPropagation();
+      confirmDeleteList(shelfDeleteX.dataset.listId);
       return;
     }
 

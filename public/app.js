@@ -2747,62 +2747,62 @@ function openHowToModal() {
     return;
   }
 
-  const myColor = visitor ? visitor.color : '#bbb';
-  const isReady = !visitor || (selectedVisitors[visitorId] !== false);
-  const rdyClass = isReady ? 'ready' : 'not-ready';
-  const rdyText  = isReady ? 'Rdy' : 'Naw';
-  /* Show the viewer's actual display name in the comment demo, with a
-     lowercase fallback for pre-join sessions. */
-  const myName = (displayNames[visitorId] || (visitor && visitor.name) || 'your_name').toLowerCase();
+  /* Pre-materialize fallbacks: virtualUserName / virtualListName /
+     virtualUserColor are set by enterVirtualList() the moment a fresh
+     visitor lands on /, so they're populated even before any DB row exists
+     (e.g. an incognito tab that just hit the help modal). */
+  const myColor = (visitor && visitor.color) || virtualUserColor || '#bbb';
+  const myColorEsc = escapeHtml(myColor);
+  const myName = (visitor && visitor.name) || virtualUserName || 'your name';
+  const listNick = (listData && listData.your_list_name && listData.your_list_name.trim())
+    || virtualListName
+    || 'list nickname';
+
+  /* Personal login URL — same `?ListId=…&UserId=…` form as the share
+     modal's "private link". Falls back to placeholders when the visitor
+     hasn't materialized yet. */
+  const safeListId = listId ? encodeURIComponent(listId) : 'XXXXXXXX';
+  const safeUserId = visitorId ? encodeURIComponent(visitorId) : 'YOURID';
+  const loginUrl = window.location.origin
+    + '/?ListId=' + safeListId + '&UserId=' + safeUserId;
 
   modal.innerHTML = '<div class="modal-content howto-modal">'
     + '<button class="modal-close">✕</button>'
     + '<h2>How CouchList works</h2>'
 
-    + '<p><span class="tab tab-mine tab-new howto-demo-tab">'
-    + '<input class="tab-name-input" type="text" placeholder="Type your name" '
-    + 'readonly tabindex="-1"></span> '
-    + 'on your tab to join the list.</p>'
+    + '<p>Couchlist is a list of movies you and your couch mates want to '
+    + 'watch. It was made by Doug with Claude Code for fun.</p>'
 
-    + '<p><strong>Change your color</strong> by tapping the <strong>Shelf</strong> '
-    + 'button in the search row, then Color in shelf mode.</p>'
+    + '<p>The <span class="howto-mini howto-mini-couchtab">Couchlist</span> '
+    + 'tab lists movies in everyone\'s average ranking '
+    + '(<a href="https://en.wikipedia.org/wiki/Borda_count" target="_blank" rel="noopener">Borda</a>).</p>'
 
-    + '<p><strong>Search for movies</strong> you want to add to the watch list in the search bar.</p>'
+    + '<p>The other tabs show the list in each user\'s ranking.</p>'
 
-    + '<p><strong>Rank movies</strong> in your tab. Drag them by the '
-    + 'handle. Drop them in their new spot.</p>'
+    + '<p>Setting <span class="howto-mini howto-mini-naw-circle">Naw</span> '
+    + 'instead of <span class="howto-mini howto-mini-rdy-circle">Rdy</span> '
+    + 'exempts that user\'s ranking from the Couchlist.</p>'
 
-    + '<p><strong>Comment</strong> once on each movie. Tap on '
-    + '<span class="comment-box howto-demo-box" style="color:#1976d2">'
-    + '<strong>' + escapeHtml(myName) + ':</strong></span> '
-    + '.</p>'
+    + '<p>Click on <span class="howto-mini howto-mini-mytab" '
+    + 'style="background:' + myColorEsc + '">' + escapeHtml(myName) + '</span> '
+    + 'or <span class="howto-mini howto-mini-couchtab">' + escapeHtml(listNick) + '</span> '
+    + 'to edit it.</p>'
 
-    + '<p>The <span class="tab tab-couch howto-demo-tab"><span class="tab-couch-text">Couchlist</span></span> '
-    + 'tab is the consensus (Borda method) of the '
-    + '<span class="tab-ready-btn ready howto-demo-rdy">Rdy</span> people.</p>'
+    + '<p>Use the search bar to add more movies.</p>'
 
-    + '<p><strong>Toggle</strong> '
-    + '<span class="tab-ready-btn ' + rdyClass + ' howto-demo-rdy howto-demo-rdy-active" '
-    + 'data-howto-action="rdy">' + rdyText + '</span> '
-    + 'on any tab to include or exclude that person. Shared state with all users.</p>'
+    + '<p>Invite others with <span class="howto-mini howto-mini-plus">+</span>.</p>'
 
-    + '<p><strong>Tap movies</strong> for plot and cast pop up. Tap that '
-    + 'to go to TMDB.</p>'
+    + '<p><span class="howto-mini howto-mini-action howto-mini-shelfbtn">Shelf</span> '
+    + 'is for ranking movies by yourself or with different couch mates.</p>'
 
-    + '<p><strong>Remove movies</strong> you have added with the ✕ on the right.</p>'
-
-    + '<p><strong>Invite someone</strong> by tapping the rightmost '
-    + '<strong>+</strong> tab to grab a share link.</p>'
-
-    + '<p><strong>No security.</strong> Your ID is just a random text string. '
-    + 'Anyone who sees it can be you on the site. Don\'t put anything '
+    + '<p>Couchlist users have no security. A user ID is just a plain text '
+    + 'string. Anyone who sees it can be that user. Don\'t put anything '
     + 'sensitive here.</p>'
 
-    + '<p>Going to '
-    + '<a href="https://couchlist.org/" target="_blank" rel="noopener">couchlist.org</a> '
-    + 'lands you on a fresh blank list — start adding movies and the URL '
-    + 'fills in. The shareable form of this list is '
-    + '<strong>' + escapeHtml(window.location.host + '/?ListId=' + (listId || 'XXXXXXXX')) + '</strong>.</p>'
+    + '<p>A cookie with your user ID is set. This link will set the '
+    + 'current user without the cookie:<br>'
+    + '<strong>' + escapeHtml(loginUrl) + '</strong></p>'
+
     + '</div>';
 
   showHowToModal(modal);

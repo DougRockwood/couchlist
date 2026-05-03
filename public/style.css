@@ -1382,6 +1382,58 @@ html, body {
   font-weight: 700;
 }
 
+/* Couch-mode help-modal extras. Couchlist tab — black bg, white text
+   (matches .tab-couch). Used for both the "Couchlist" tab reference and
+   the "list nickname" text that lives inside it. */
+.howto-modal .howto-mini-couchtab {
+  background: #000;
+  color: #fff;
+  border-color: #000;
+}
+
+/* Your-name visitor tab — user-color bg (set inline), white text
+   (matches .tab-mine in the live tab strip). */
+.howto-modal .howto-mini-mytab {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+}
+
+/* + invite tab — dark gray bg, white "+" (matches .tab-plus). */
+.howto-modal .howto-mini-plus {
+  background: #2a2a2a;
+  color: #fff;
+  border-color: #2a2a2a;
+  font-weight: 700;
+}
+
+/* Shelf action button — blue on white (matches .action-btn). */
+.howto-modal .howto-mini-shelfbtn {
+  color: #0000ee;
+  border-color: #0000ee;
+}
+
+/* Rdy / Naw drawn as full-size 28px circles, matching the live
+   .tab-ready-btn dimensions and colors. The label text stays at the
+   modal's paragraph size, centered. */
+.howto-modal .howto-mini-rdy-circle,
+.howto-modal .howto-mini-naw-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,0.25);
+  color: #fff;
+  letter-spacing: 0.3px;
+  text-shadow: none;
+  white-space: nowrap;
+}
+.howto-modal .howto-mini-rdy-circle { background: #2a9d3f; }
+.howto-modal .howto-mini-naw-circle { background: #c0392b; }
+
 
 /* ============================================================================
    SECTION 9: COMMENT EXPAND

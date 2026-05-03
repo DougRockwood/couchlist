@@ -2802,17 +2802,6 @@ function openHowToModal() {
     return;
   }
 
-  /* Pre-materialize fallbacks: virtualUserName / virtualListName /
-     virtualUserColor are set by enterVirtualList() the moment a fresh
-     visitor lands on /, so they're populated even before any DB row exists
-     (e.g. an incognito tab that just hit the help modal). */
-  const myColor = (visitor && visitor.color) || virtualUserColor || '#bbb';
-  const myColorEsc = escapeHtml(myColor);
-  const myName = (visitor && visitor.name) || virtualUserName || 'your name';
-  const listNick = (listData && listData.your_list_name && listData.your_list_name.trim())
-    || virtualListName
-    || 'list nickname';
-
   /* Personal login URL — same `?ListId=…&UserId=…` form as the share
      modal's "private link". Falls back to placeholders when the visitor
      hasn't materialized yet. */
@@ -2823,39 +2812,35 @@ function openHowToModal() {
 
   modal.innerHTML = '<div class="modal-content howto-modal">'
     + '<button class="modal-close">✕</button>'
-    + '<h2>How CouchList works</h2>'
+    + '<h2>How Couchlist works</h2>'
 
-    + '<p>Couchlist is a list of movies you and your couch mates want to '
-    + 'watch. It was made by Doug with Claude Code for fun.</p>'
+    + '<p class="howto-newlist">Couchlist is a shared list of movies you and '
+    + 'your couch mates want to watch. Built by Doug with Claude Code, for fun.</p>'
 
-    + '<p>The <span class="howto-mini howto-mini-couchtab">Couchlist</span> '
-    + 'tab lists movies in everyone\'s average ranking '
-    + '(<a href="https://en.wikipedia.org/wiki/Borda_count" target="_blank" rel="noopener">Borda</a>).</p>'
+    + '<p><span class="howto-mini howto-mini-couchtab">Couchlist</span> '
+    + 'tab — everyone\'s rankings combined '
+    + '(<a href="https://en.wikipedia.org/wiki/Borda_count" target="_blank" rel="noopener">Borda</a> count).</p>'
 
-    + '<p>The other tabs show the list in each user\'s ranking.</p>'
+    + '<p>User tabs — same list, different rankings.</p>'
 
-    + '<p>Setting <span class="howto-mini howto-mini-naw-circle">Naw</span> '
-    + 'instead of <span class="howto-mini howto-mini-rdy-circle">Rdy</span> '
-    + 'exempts that user\'s ranking from the Couchlist.</p>'
+    + '<p><span class="howto-mini howto-mini-naw-circle">Naw</span> vs '
+    + '<span class="howto-mini howto-mini-rdy-circle">Rdy</span> — set '
+    + '<span class="howto-mini howto-mini-naw-circle">Naw</span> to drop '
+    + 'that user\'s vote from the Couchlist.</p>'
 
-    + '<p>Click on <span class="howto-mini howto-mini-mytab" '
-    + 'style="background:' + myColorEsc + '">' + escapeHtml(myName) + '</span> '
-    + 'or <span class="howto-mini howto-mini-couchtab">' + escapeHtml(listNick) + '</span> '
-    + 'to edit it.</p>'
+    + '<p>Search bar — add movies.</p>'
 
-    + '<p>Use the search bar to add more movies.</p>'
-
-    + '<p>Invite others with <span class="howto-mini howto-mini-plus">+</span>.</p>'
+    + '<p><span class="howto-mini howto-mini-plus">+</span> — invite others.</p>'
 
     + '<p><span class="howto-mini howto-mini-action howto-mini-shelfbtn">Shelf</span> '
-    + 'is for ranking movies by yourself or with different couch mates.</p>'
+    + 'mode is your own movie list.</p>'
 
-    + '<p>Couchlist users have no security. A user ID is just a plain text '
-    + 'string. Anyone who sees it can be that user. Don\'t put anything '
-    + 'sensitive here.</p>'
+    + '<p class="howto-newlist">No security. A user ID is just a plain-text '
+    + 'string; anyone who has it is that user. Don\'t put anything sensitive '
+    + 'here.</p>'
 
-    + '<p>A cookie with your user ID is set. This link will set the '
-    + 'current user without the cookie:<br>'
+    + '<p class="howto-newlist">Your user ID is stored in a cookie. This link '
+    + 'sets it without the cookie:<br>'
     + '<strong>' + escapeHtml(loginUrl) + '</strong></p>'
 
     + '</div>';

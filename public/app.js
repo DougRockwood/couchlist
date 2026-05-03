@@ -87,12 +87,21 @@ let movieDetailCache  = {};
 let displayNames      = {};
 
 /* Virtual-mode placeholders.
-   Bare `/` lands the user in couchlist mode with a blank list and no DB
-   identity. We show editable defaults — "CouchM8#NNN" for the user tab,
-   "Couch#NNN" for the couch tab — and only persist anything (visitor
-   row, list row, list nickname) when the user does something concrete (adds
-   a movie, types a name, etc.). The names are kept in localStorage so a
-   refresh during this virtual state shows the same numbers. */
+   Used in three scenarios:
+   1. Bare `/` — no listId, no visitor: full virtual mode (isVirtualList=true).
+      User sees "CouchM8#NNN" / "Couch#NNN" defaults; first concrete action
+      mints a fresh listId via materializeList().
+   2. URL has a listId for a list that doesn't exist (404 from the server,
+      e.g. fresh shared `/<8>` URL or stale last_list_id). isVirtualList
+      stays false so materializeList() won't overwrite the URL's listId —
+      /join uses it directly.
+   3. URL has a listId for an existing list the visitor isn't on yet
+      (fresh shared-URL arrival). virtualListName is seeded from the
+      server's default_list_name (first non-empty nickname in slot
+      order — prefers the creator) so the Couch tab pre-fills with the
+      inherited name instead of a random Couch#NNN.
+   In all three, names are kept in localStorage so a refresh during the
+   pre-materialize state shows the same values. */
 let virtualUserName  = null;       // shown on the user tab pre-materialize
 let virtualUserColor = null;       // tab background pre-materialize (random hsl)
 let virtualListName  = null;       // shown on the couch tab pre-materialize
@@ -231,35 +240,44 @@ function initApp() {
   });
 }
 
-/* Generate the placeholder Couch#NNN / CouchM8#NNN names and stash in
-   localStorage so a refresh keeps the same numbers. Returns nothing — sets
-   the module-level virtualUserName / virtualListName / isVirtualList flags. */
+/* Populate the virtualUserName / virtualUserColor / virtualListName
+   placeholders (Couch#NNN / CouchM8#NNN, random color), reading from
+   localStorage so a refresh keeps the same values. Idempotent — safe to
+   call repeatedly; only fills slots that are still null. Does NOT set
+   isVirtualList — the caller decides that. */
+function ensureVirtualPlaceholders () {
+  if (!virtualUserName) {
+    let n = readLocalStorage('wtw_virtual_user_name');
+    if (!n) {
+      n = 'CouchM8#' + threeDigits();
+      writeLocalStorage('wtw_virtual_user_name', n);
+    }
+    virtualUserName = n;
+  }
+  if (!virtualUserColor) {
+    let c = readLocalStorage('wtw_virtual_user_color');
+    if (!c) {
+      c = randomColor();
+      writeLocalStorage('wtw_virtual_user_color', c);
+    }
+    virtualUserColor = c;
+  }
+  if (!virtualListName) {
+    let l = readLocalStorage('wtw_virtual_list_name');
+    if (!l) {
+      l = 'Couch#' + threeDigits();
+      writeLocalStorage('wtw_virtual_list_name', l);
+    }
+    virtualListName = l;
+  }
+}
+
+/* Bare-/ entry point: generate placeholders AND flag the session as
+   virtual so materializeList() will mint a fresh listId when the user
+   commits something. */
 function enterVirtualList () {
   isVirtualList = true;
-  let n = readLocalStorage('wtw_virtual_user_name');
-  if (!n) {
-    n = 'CouchM8#' + threeDigits();
-    writeLocalStorage('wtw_virtual_user_name', n);
-  }
-  virtualUserName = n;
-
-  /* Pre-pick a random user color so the virtual tab shows something fun
-     instead of placeholder gray. Persisted in localStorage so a refresh
-     keeps the same color, and the same color rolls into the visitor row
-     when materializeVisitor() commits. */
-  let c = readLocalStorage('wtw_virtual_user_color');
-  if (!c) {
-    c = randomColor();
-    writeLocalStorage('wtw_virtual_user_color', c);
-  }
-  virtualUserColor = c;
-
-  let l = readLocalStorage('wtw_virtual_list_name');
-  if (!l) {
-    l = 'Couch#' + threeDigits();
-    writeLocalStorage('wtw_virtual_list_name', l);
-  }
-  virtualListName = l;
+  ensureVirtualPlaceholders();
 }
 
 function threeDigits () {
@@ -453,17 +471,21 @@ function hideNameWarning() {
    Fetches everything about this list from our server and updates state.
    Called on page load and after any change (add, delete, swap, comment).
 
-   Virtual-mode short-circuit: if isVirtualList (or listId is null), we
-   skip the fetch and synthesize an empty listData so renderUserTabs can
-   show the placeholder Couch tab and user tab. Any commit will run
-   ensureMaterialized first and then loadList again.
+   Pre-materialize paths populate Couch#NNN / CouchM8#NNN placeholders
+   via ensureVirtualPlaceholders():
+   - isVirtualList || !listId   → bare /, no fetch, virtual mode
+   - 404 from /api/list/:id     → keep listId, synthesize empty stub
+   - 200 but visitor not on list → seed virtualListName from the response's
+                                  default_list_name (inherited nickname)
 
    Server returns:
    {
-     list:           { id, created, private, owner_visitor_id },
-     visitors:       { "1": { id, name, color, slot, ready }, ... },
-     movies:         [ { id, title, year, ..., user1_rank, user1_comment, ... } ],
-     your_list_name: <string|null>   // requester's per-list nickname
+     list:              { id, created, private, owner_visitor_id, tab_color },
+     visitors:          { "1": { id, name, color, slot, ready }, ... },
+     movies:            [ { id, title, year, ..., user1_rank, ... } ],
+     your_list_name:    <string|null>   // requester's per-list nickname
+     default_list_name: <string|null>   // inherited nickname for non-members
+                                          (first non-empty in slot order)
    }
    Passing ?visitor_id=... also bumps the server-side visitors.last_list_id.
 
@@ -491,15 +513,43 @@ async function loadList() {
       + (visitorId ? '?visitor_id=' + encodeURIComponent(visitorId) : ''));
 
     if (!resp.ok) {
-      /* list doesn't exist yet — start with empty data */
+      /* List doesn't exist yet — could be a fresh `/<8>` URL someone shared
+         before joining, or a stale `last_list_id` pointing at a deleted list,
+         or just a typo'd ListId. Either way, we want the same Couch#NNN /
+         CouchM8#NNN placeholders the bare-/ flow shows so the page isn't
+         blank. We do NOT flip isVirtualList — the URL's listId is preserved
+         so the eventual /join creates the list with that ID instead of
+         minting a fresh one. */
+      ensureVirtualPlaceholders();
       listData = {
         list: { id: listId },
         visitors: {},
         movies: [],
-        your_list_name: null
+        your_list_name: virtualListName || null
       };
     } else {
       listData = await resp.json();
+      /* Fresh shared-URL arrival: list exists and has members, but we're
+         not one of them yet. If any current member has named the list,
+         the server returned that name as default_list_name (first non-
+         empty in slot order — slot 1 is the creator, so this prefers the
+         creator's nickname when set). Seed virtualListName with it so
+         the Couch tab pre-fills with "Movie Night" instead of a random
+         Couch#NNN. The server's current value wins over any stale
+         localStorage value (e.g. members may have renamed since our
+         last visit). When the user does anything concrete,
+         ensureMaterialized -> PUT /list-name will save virtualListName
+         as their per-user nickname; they can still edit it freely
+         without affecting anyone else. */
+      const haveSlot = Object.values(listData.visitors).some(v => v.id === visitorId);
+      if (!haveSlot) {
+        if (listData.default_list_name) {
+          virtualListName = listData.default_list_name;
+          writeLocalStorage('wtw_virtual_list_name', virtualListName);
+        }
+        ensureVirtualPlaceholders();
+        listData.your_list_name = virtualListName;
+      }
     }
   }
 

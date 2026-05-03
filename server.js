@@ -1208,10 +1208,16 @@ app.delete('/api/visitor/:id', (req, res) => {
    ============================================================================
    Returns everything about a list in one response:
    {
-     list:     { id, created },
-     visitors: { "1": { id, name, color, slot }, "2": { ... }, ... },
-     movies:   [ { id, tmdb_id, title, year, poster, added_by,
-                   user1_rank, user1_comment, user2_rank, ... }, ... ]
+     list:              { id, created, tab_color, ... },
+     visitors:          { "1": { id, name, color, slot, ready }, "2": ... },
+     movies:            [ { id, tmdb_id, title, year, poster, added_by,
+                            user1_rank, user1_comment, user2_rank, ... }, ... ],
+     your_list_name:    requester's per-user nickname (null if not on list),
+     default_list_name: first non-empty nickname in slot order (only set
+                        when the requester ISN'T on the list — used by the
+                        client to seed the Couch tab nickname for fresh
+                        shared-URL arrivals so they inherit "Movie Night"
+                        instead of a random Couch#NNN)
    }
 
    Visitors are keyed by SLOT NUMBER (not visitor ID). This makes it easy
@@ -1225,7 +1231,11 @@ app.get('/api/list/:id', (req, res) => {
   const listId = req.params.id;
   /* If ?visitor_id=xxx is passed AND that visitor is on this list, the
      response includes `your_list_name` (their per-user nickname for the
-     list). Other visitors' nicknames stay private. */
+     list). Other visitors' nicknames stay private. Visitors who AREN'T
+     on the list yet (fresh shared-URL arrivals) get `default_list_name`
+     instead — the first non-empty nickname in slot order. Slot 1 IS the
+     creator, so this naturally inherits the creator's nickname when set,
+     with a graceful fallback to other members otherwise. */
   const requesterId = req.query.visitor_id;
 
   const access = checkListAccess(listId, requesterId);
@@ -1234,9 +1244,13 @@ app.get('/api/list/:id', (req, res) => {
 
   const movies = db.prepare('SELECT * FROM movies WHERE list_id = ?').all(listId);
 
-  const slots = db.prepare('SELECT * FROM list_visitors WHERE list_id = ?').all(listId);
+  const slots = db.prepare(
+    'SELECT * FROM list_visitors WHERE list_id = ? ORDER BY slot'
+  ).all(listId);
   const visitors = {};
   let yourListName = null;
+  let defaultListName = null;
+  let requesterIsMember = false;
   slots.forEach(s => {
     const v = db.prepare('SELECT * FROM visitors WHERE id = ?').get(s.visitor_id);
     if (v) {
@@ -1247,8 +1261,16 @@ app.get('/api/list/:id', (req, res) => {
     }
     if (requesterId && s.visitor_id === requesterId) {
       yourListName = s.list_name || null;
+      requesterIsMember = true;
+    }
+    if (defaultListName === null && s.list_name && s.list_name.trim()) {
+      defaultListName = s.list_name;
     }
   });
+  /* Only suggest a default nickname when the requester isn't already on the
+     list — once they've joined, `your_list_name` (even if null) is the
+     authoritative answer for their per-user nickname. */
+  if (requesterIsMember) defaultListName = null;
 
   /* Track this list as the requester's last-viewed (used to restore them on
      bare /couchlist.org). Only update if the visitor row already exists —
@@ -1267,7 +1289,11 @@ app.get('/api/list/:id', (req, res) => {
     db.prepare('UPDATE lists SET tab_color = ? WHERE id = ?').run(list.tab_color, listId);
   }
 
-  res.json({ list, visitors, movies, your_list_name: yourListName });
+  res.json({
+    list, visitors, movies,
+    your_list_name: yourListName,
+    default_list_name: defaultListName
+  });
 });
 
 

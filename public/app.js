@@ -345,8 +345,11 @@ async function ensureMaterialized (nameOverride) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ visitor_id: visitorId })
   });
-  /* Save the virtual list nickname as our nickname for this list — only the
-     first time, and only if the user hasn't already named it explicitly. */
+  /* Save virtualListName as our per-list nickname. This may be an
+     auto-generated Couch#NNN (bare-/ or 404 path) OR an inherited
+     default_list_name from another member (fresh shared-URL arrival).
+     handleListNameEntry clears virtualListName before calling us, so
+     this PUT only fires when the user hasn't explicitly named the list. */
   if (virtualListName) {
     await fetch(API + '/list/' + listId + '/list-name', {
       method: 'PUT',
@@ -416,12 +419,14 @@ async function handleListNameEntry (nameText) {
   if (!nameText || nameText.trim() === '') return;
   nameText = nameText.trim().slice(0, 12);
 
-  if (isVirtualList) {
-    /* User typed an explicit list name — discard the auto-generated one
-       so ensureMaterialized doesn't overwrite their choice. */
-    virtualListName = null;
-    clearLocalStorage('wtw_virtual_list_name');
-  }
+  /* User typed an explicit list name — discard any virtual / inherited
+     value so ensureMaterialized doesn't fire its redundant "save the
+     placeholder" PUT before our authoritative one below. (Was
+     `if (isVirtualList)` originally — that missed the fresh-arrival case
+     where virtualListName holds the inherited default_list_name even
+     though isVirtualList is false.) */
+  virtualListName = null;
+  clearLocalStorage('wtw_virtual_list_name');
   await ensureMaterialized();
   await fetch(API + '/list/' + listId + '/list-name', {
     method: 'PUT',

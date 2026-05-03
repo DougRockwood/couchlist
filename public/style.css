@@ -43,14 +43,12 @@
   padding: 0;
 }
 
-/* RDY-gradient: a left-to-right gradient through all RDY users' colors,
-   set on :root by applyRdyGradient() in app.js after every renderList().
-   Currently consumed only by the Couch tab's "Couch List" label, where
-   the gradient is clipped to the shape of the text on a black tab body.
-   Defaults to white so the label is never invisible if no one is ready
-   (or if JS hasn't run yet). */
+/* The Couch tab's two stacked labels paint in the list's saved tab_color
+   (server-side mix of member colors). Each tab passes its color down via
+   `--list-tab-color` inline; the default below keeps the help-modal demo
+   readable since it doesn't have a real list to draw a color from. */
 :root {
-  --rdy-gradient: linear-gradient(90deg, #ffffff, #ffffff);
+  --list-tab-color: #ffffff;
 }
 
 html, body {
@@ -162,6 +160,12 @@ html, body {
 
 .action-btn:hover { background: #f0f0ff; }
 
+/* Landscape (desktop / rotated phone): shrink the search-row buttons from
+   10% to 3% so they line up with the slimmer rank/grab/check/X columns. */
+@media (orientation: landscape) {
+  .action-btn { flex: 0 0 3%; }
+}
+
 /* Visitor's own color picker, sitting in the search row between the
    search box and the INFO button. Click opens the native color picker. */
 #my-color-dot {
@@ -269,10 +273,11 @@ html, body {
   width: max-content;
 }
 
-/* Shared tab base. Concrete tab variants below set their own display/grid. */
+/* Shared tab base. Concrete tab variants below set their own display/grid.
+   Restored to main-branch geometry (68px tall, variable width, 14px text). */
 .tab {
-  height: 68px;                       /* 2x the old 34px — fills more vertical space */
-  border-radius: 15px;                /* circle radius (14) + border (1) */
+  height: 68px;
+  border-radius: 15px;
   padding: 3px;
   cursor: pointer;
   user-select: none;
@@ -282,30 +287,187 @@ html, body {
   color: #333;
 }
 
-/* Couch tab: big label centered. Min-width = height keeps the smallest
-   form square; the big font usually pushes it wider. The Couch tab is
-   the only site element with a black background — its inner .tab-couch-text
-   span paints the label using the RDY-gradient via background-clip: text.
-   We can't put the gradient on .tab-couch itself because background-clip:
-   text would hide the black fill too — so the black lives on the parent
-   and the gradient lives on the child span. */
+/* Couch tab: big label centered. Two stacked centered lines:
+   "couchlist" on top + the list nickname on bottom. Both paint plain
+   white on a black tab — the list's mixed tab_color is no longer used
+   here (kept threading via --list-tab-color in case other rules rely
+   on it). */
 .tab-couch {
+  position: relative;                 /* anchor for .tab-count-float badge + nickname */
   display: inline-flex;
-  align-items: center;
+  align-items: center;                /* vertically centers .tab-couch-stack → centers "couchlist" */
   justify-content: center;
-  min-width: 68px;
-  padding: 0 8px;
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
+  min-width: 136px;                   /* doublewide — mirrors .tab-shelf-myshelf in shelf mode */
+  padding: 4px 8px;
+  font-size: 14px;
+  font-weight: 500;
   background: #000000;
 }
 
+/* "Couchlist" alone in the centered stack — the nickname is taken out of
+   normal flow (absolute, pinned to the bottom edge) so the label stays at
+   the tab's vertical center regardless of nickname presence. */
+.tab-couch-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.05;
+  width: 100%;
+}
+
+/* Plain white text on the black tab — both the "couchlist" label and
+   the nickname share this color. */
 .tab-couch-text {
-  background: var(--rdy-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: #ffffff;
+}
+
+/* "Couchlist" label — 25px. translateY shifts it 25% of its own height
+   below the flex-centered position, biasing it toward the bottom of the
+   tab so the nickname has more breathing room above. */
+.tab-couch-text:not(.tab-couch-nickname) {
+  font-size: 25px;
+  transform: translateY(25%);
+}
+
+/* Nickname — 14px, absolutely positioned in the top of the tab so
+   "Couchlist" can stay at the visual center below it. The center is
+   shifted 16px LEFT of the tab's true center to compensate for the
+   28px+4px count badge in the top-right corner — that leaves the
+   nickname optically centered in the space the badge doesn't occupy.
+   Vertical: anchored top:4px with height matching the 28px badge and
+   flex-centered, so the nickname's text baseline lines up with the
+   number inside the count badge. */
+.tab-couch-nickname {
+  position: absolute;
+  top: 4px;
+  left: calc(50% - 16px);
+  transform: translateX(-50%);
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 500;
+  max-width: calc(100% - 40px);       /* leave room for tab padding + corner badge */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Editable input on the active Couch tab. Same white-on-black look as
+   the static nickname span. The selector is doubled up
+   (.tab-couch .tab-couch-name-input) to outweigh the later, more general
+   .tab-name-input rule below. */
+.tab-couch .tab-couch-name-input {
+  position: absolute;                 /* same top anchor as .tab-couch-nickname, shifted left to clear the count badge */
+  top: 4px;
+  left: calc(50% - 16px);
+  transform: translateX(-50%);
+  height: 28px;                       /* match the badge's 28px so the input's text baseline lines up with the count number */
+  background: transparent;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: 14px;                    /* match the nickname span */
+  font-weight: 500;
+  text-align: center;
+  color: #ffffff;
+  caret-color: #ffffff;
+  field-sizing: content;
+  width: auto;
+  min-width: 1ch;
+  max-width: calc(100% - 12px);
+  padding: 0 2px;
+}
+.tab-couch .tab-couch-name-input::placeholder {
+  color: #ffffff;
+  opacity: 0.55;
+}
+.tab-couch .tab-couch-name-input:focus {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+}
+
+/* "+" tab — always rightmost. Tap to open the share-link modal.
+   Plain dark grey square with a centered "+" glyph; doesn't carry RDY,
+   color, gradient, or any other tab chrome. */
+.tab-plus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  width: 44px;
+  background: #2a2a2a;
+  color: #fff;
+  font-size: 30px;
+  font-weight: 300;
+  line-height: 1;
+}
+.tab-plus:hover { background: #3a3a3a; }
+.tab-plus-icon { display: inline-block; padding-bottom: 4px; }
+
+/* Share modal — simple stacked panel with two read-only links + copy
+   buttons. Reuses #copy-paste-modal as its container. */
+.share-modal {
+  position: fixed;
+  top: 12vh;
+  left: 8vw;
+  width: 84vw;
+  max-width: 480px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: #ffffff;
+  color: #1a1a1a;
+  border: 2px solid #0000ee;
+  border-radius: 12px;
+  padding: 18px 18px 22px;
+  z-index: 200;
+  box-shadow: 0 18px 48px rgba(0,0,0,0.45);
+  font-size: 14px;
+}
+.share-modal h3 {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+}
+.share-modal .share-h3-2 { margin-top: 18px; }
+.share-modal .share-hint {
+  margin: 0 0 8px 0;
+  color: #555;
+  line-height: 1.35;
+}
+.share-modal .share-link {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  background: #f7f7f9;
+}
+.share-modal .share-copy-btn {
+  display: inline-block;
+  background: #0000ee;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.share-modal .share-copy-btn:hover { background: #1010ff; }
+.share-modal .share-modal-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: #888;
 }
 
 /* Visitor tab: 3-column / 2-row grid. Row 1 has the dots at the outer
@@ -321,7 +483,14 @@ html, body {
   row-gap: 2px;
   min-width: 60px;                    /* 28 + 2 + 28 + 2px padding margin */
   color: #fff;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+  /* Layered shadow forms a 1px black outline on the username so it stays
+     readable against any tab background color the user picks. */
+  text-shadow:
+    -1px -1px 0 rgba(0,0,0,0.85),
+     1px -1px 0 rgba(0,0,0,0.85),
+    -1px  1px 0 rgba(0,0,0,0.85),
+     1px  1px 0 rgba(0,0,0,0.85),
+     0 1px 2px rgba(0,0,0,0.55);
 }
 
 /* Active-tab ring: white halo + brand-blue outer ring. Pure box-shadow so
@@ -351,9 +520,9 @@ html, body {
   border-color: rgba(255,255,255,0.6);
 }
 
-/* RDY/NAW toggle (top-right of a visitor tab). */
+/* RDY/NAW toggle (top-LEFT of a visitor tab; was top-right pre-2026-04-30). */
 .tab-ready-btn {
-  grid-column: 3;
+  grid-column: 1;
   grid-row: 1;
   width: 28px;
   height: 28px;
@@ -372,6 +541,47 @@ html, body {
 
 .tab-ready-btn.ready     { background: #2a9d3f; }
 .tab-ready-btn.not-ready { background: #c0392b; }
+
+/* Count badge (top-right of a tab). In list mode it shows how many movies
+   the visitor added to the current list. In shelf mode it shows how many
+   movies a list contains. When the count is 0 the badge becomes a red ✕
+   that the viewer can tap to remove the empty visitor (list mode) or
+   delete the empty list (shelf mode). The slot is the same 28×28 the RDY
+   pip used to occupy — they swapped corners on 2026-04-30. */
+.tab-count {
+  grid-column: 3;
+  grid-row: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: bold;
+  color: #fff;
+  text-shadow: none;
+  border: 1px solid rgba(0,0,0,0.25);
+  background: rgba(0,0,0,0.35);              /* translucent — readable on any tab color */
+  cursor: default;
+}
+
+.tab-count.tab-count-empty {
+  background: #c0392b;                       /* matches NAW red — "danger" affordance */
+  cursor: pointer;
+  font-size: 14px;                           /* the ✕ glyph reads better one tick larger */
+}
+
+/* Floating variant — for tabs whose internal layout is flex (Couch, My
+   Shelf) rather than the .tab-user 3×2 grid. Absolute corner so the badge
+   doesn't disturb the centered stack inside the tab. The .tab-couch /
+   .tab-shelf-myshelf rules below get position:relative so the badge
+   anchors to the tab box, not the page. */
+.tab-count.tab-count-float {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
 
 /* Username row — spans all three columns at the bottom. */
 .tab-name,
@@ -479,6 +689,16 @@ html, body {
     minmax(0, 30fr)  minmax(0, 37.5fr) minmax(0, 7.5fr);
 }
 
+/* Shelf mode (My Shelf page) uses a 7-column grid:
+     rank 7.5  grab 7.5  poster 10  title 30  note 25  check 10  X 10
+   Poster column is a percentage (10fr) — its image scales to width and the
+   row height follows the poster's natural aspect (138/92 ≈ 1.5×).        */
+#movie-list.shelf-mode {
+  grid-template-columns:
+    minmax(0, 7.5fr) minmax(0, 7.5fr) minmax(0, 10fr)
+    minmax(0, 30fr)  minmax(0, 25fr)  minmax(0, 10fr) minmax(0, 10fr);
+}
+
 /* Landscape (width > height): desktop and rotated phones. Title + comments
    get the lion's share; grab/rank/X shrink to thin gutters. Poster column
    still follows --poster-width. */
@@ -487,6 +707,16 @@ html, body {
     grid-template-columns:
       minmax(0, 2fr) minmax(0, 2fr) var(--poster-width, 60px)
       minmax(0, 30fr) minmax(0, 61fr) minmax(0, 2fr);
+  }
+  /* Shelf mode in landscape: collapse rank/grab/poster/check/X gutters and
+     give the freed width to the note column — same shape as the couchlist
+     landscape rule, where rank/grab/X drop to 2fr and comments fattens to
+     61fr. Search-row buttons drop to 3% in landscape (see .action-btn
+     media rule) so the checkbox/X columns line up under ALL/NONE / help. */
+  #movie-list.shelf-mode {
+    grid-template-columns:
+      minmax(0, 2fr)  minmax(0, 2fr)  minmax(0, 3fr)
+      minmax(0, 30fr) minmax(0, 57fr) minmax(0, 3fr) minmax(0, 3fr);
   }
 }
 
@@ -1082,6 +1312,128 @@ html, body {
 
 .howto-modal .howto-newlist a { color: #1976d2; }
 
+/* Shelf-mode help-modal inline demos. Each .howto-mini is a small bordered
+   box that wraps a parenthesized label (e.g. "(My Shelf)", "(Move)") and
+   mirrors the corresponding tab/button colors. Text stays at the modal's
+   paragraph size so the box "just barely fits" the label. */
+.howto-modal .howto-mini {
+  display: inline-block;
+  vertical-align: baseline;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-size: inherit;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0 1px;
+  text-shadow: none;
+  white-space: nowrap;
+}
+
+/* My Shelf tab — user-color bg, white label (matches .tab-shelf-myshelf).
+   The bg color is set inline by JS from shelfData.visitor.color. */
+.howto-modal .howto-mini-myshelf {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+}
+
+/* All tab — black bg, white label (matches .tab-shelf-all). */
+.howto-modal .howto-mini-all {
+  background: #000;
+  color: #fff;
+  border-color: #000;
+}
+
+/* Solo tab — white bg, user-color border + label (matches .tab-shelf-solo).
+   Border + text colors are set inline by JS from the visitor color. */
+.howto-modal .howto-mini-solo {
+  background: #fff;
+}
+
+/* Rdy / Naw pip — green/red bg, white label (matches .tab-ready-btn). */
+.howto-modal .howto-mini-rdy {
+  background: #2a9d3f;
+  color: #fff;
+  border-color: rgba(0,0,0,0.25);
+}
+.howto-modal .howto-mini-naw {
+  background: #c0392b;
+  color: #fff;
+  border-color: rgba(0,0,0,0.25);
+}
+
+/* Action-button mini demos — white bg + colored border/label, matching
+   the search-row .action-btn family in shelf mode. */
+.howto-modal .howto-mini-action {
+  background: #fff;
+}
+.howto-modal .howto-mini-move,
+.howto-modal .howto-mini-allbtn {
+  color: #0000ee;
+  border-color: #0000ee;
+}
+.howto-modal .howto-mini-color {
+  font-weight: 700;
+  /* color + border-color set inline by JS to the visitor color. */
+}
+.howto-modal .howto-mini-couch {
+  color: #000;
+  border-color: #000;
+  font-weight: 700;
+}
+
+/* Couch-mode help-modal extras. Couchlist tab — black bg, white text
+   (matches .tab-couch). Used for both the "Couchlist" tab reference and
+   the "list nickname" text that lives inside it. */
+.howto-modal .howto-mini-couchtab {
+  background: #000;
+  color: #fff;
+  border-color: #000;
+}
+
+/* Your-name visitor tab — user-color bg (set inline), white text
+   (matches .tab-mine in the live tab strip). */
+.howto-modal .howto-mini-mytab {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+}
+
+/* + invite tab — dark gray bg, white "+" (matches .tab-plus). */
+.howto-modal .howto-mini-plus {
+  background: #2a2a2a;
+  color: #fff;
+  border-color: #2a2a2a;
+  font-weight: 700;
+}
+
+/* Shelf action button — blue on white (matches .action-btn). */
+.howto-modal .howto-mini-shelfbtn {
+  color: #0000ee;
+  border-color: #0000ee;
+}
+
+/* Rdy / Naw drawn as full-size 28px circles, matching the live
+   .tab-ready-btn dimensions and colors. The label text stays at the
+   modal's paragraph size, centered. */
+.howto-modal .howto-mini-rdy-circle,
+.howto-modal .howto-mini-naw-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,0.25);
+  color: #fff;
+  letter-spacing: 0.3px;
+  text-shadow: none;
+  white-space: nowrap;
+}
+.howto-modal .howto-mini-rdy-circle { background: #2a9d3f; }
+.howto-modal .howto-mini-naw-circle { background: #c0392b; }
+
 
 /* ============================================================================
    SECTION 9: COMMENT EXPAND
@@ -1209,4 +1561,425 @@ html, body {
   font-size: 12px;
   color: #555;
   margin-bottom: 6px;
+}
+
+
+/* ============================================================================
+   MY SHELF (v6) — full tab styles + entry layout
+   ============================================================================
+   Square 56×56 tabs (inherited from .tab) for every variant: All / My Shelf /
+   Solo / list. They reuse the tab-user 3-col-2-row grid (24/1fr/24, 24/1fr)
+   so the RDY pip lives top-right and the label lives at the bottom centered.
+   Background, text color, and presence of RDY differ per variant.
+   ============================================================================ */
+
+.shelf-empty {
+  grid-column: 1 / -1;                /* span every grid column in #movie-list */
+  padding: 24px 12px;
+  color: #666;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* "All" tab — black bg, "All" centered at bottom, RDY top-right (its
+   click bulk-fans-out across every list-tab). */
+.tab-shelf-all {
+  background: #000000;
+  color: #ffffff;
+  text-shadow: none;
+}
+.tab-shelf-all .tab-name { color: #ffffff; font-weight: 600; }
+
+/* "My Shelf" tab — user's color background, mirrors the Couchlist tab
+   layout on the list-mode page: big "Shelf" label centered, "<name>'s"
+   pinned to a 28px band at the top so the username's text baseline lines
+   up with the count badge in the top-right. NO RDY pip. We override the
+   .tab-user inline-grid here because we want a centered flex layout, not
+   the dot/dot/name grid the visitor tabs use. */
+.tab-shelf-myshelf {
+  position: relative;                 /* anchor for .tab-count-float badge + name-row */
+  display: inline-flex;
+  align-items: center;                /* vertically centers .tab-shelf-myshelf-stack → centers "Shelf" */
+  justify-content: center;
+  min-width: 136px;
+  padding: 4px 8px;
+}
+
+/* "Shelf" alone in the centered stack — the name-row is taken out of
+   normal flow (absolute, pinned to the top) so the label stays at the
+   tab's vertical center regardless of the username row. */
+.tab-shelf-myshelf-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.05;
+  width: 100%;
+}
+
+/* Name row (editable username + 's) — 14px, absolutely positioned in a
+   28px band at the top with the same center-offset and flex-centering as
+   .tab-couch-nickname, so the username's text baseline lines up with the
+   count number in the top-right badge. */
+.tab-shelf-myshelf-name-row {
+  position: absolute;
+  top: 4px;
+  left: calc(50% - 16px);
+  transform: translateX(-50%);
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: calc(100% - 40px);       /* leave room for tab padding + corner badge */
+  font-weight: 600;
+  font-size: 14px;
+  color: #ffffff;
+  overflow: hidden;
+}
+.shelf-username-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #ffffff;
+  -webkit-text-fill-color: #ffffff;
+  caret-color: #ffffff;
+  font: inherit;
+  font-weight: 600;
+  text-align: center;
+  text-shadow: inherit;
+  field-sizing: content;
+  width: auto;
+  min-width: 1ch;
+  max-width: 100%;
+  padding: 0 2px;
+}
+.shelf-username-input::placeholder {
+  color: rgba(255, 255, 255, 0.6);
+}
+.shelf-username-input:focus {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+}
+.tab-shelf-myshelf-suffix {
+  font-weight: 600;
+  color: #ffffff;
+  flex: 0 0 auto;
+}
+/* "Shelf" label — 25px to match the "couchlist" label on the Couch tab.
+   translateY(25%) shifts it 25% of its own height below the flex-centered
+   position, biasing it toward the bottom so the username row at the top
+   has more breathing room — exact mirror of .tab-couch-text. */
+.tab-shelf-myshelf-label {
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 25px;
+  transform: translateY(25%);
+}
+
+/* "Solo" tab — white bg, user-color border, user-color text. RDY pip
+   uses the standard green/red treatment (shared .tab-ready-btn rules). */
+.tab-shelf-solo {
+  background: #ffffff;
+  color: #222;
+  text-shadow: none;
+  border: 1px solid currentColor;     /* currentColor inherits the user color we set inline */
+}
+.tab-shelf-solo .tab-name { color: inherit; font-weight: 600; }
+
+/* List tabs in shelf mode — solid bg painted inline from lists.tab_color
+   (server-side mix of member colors, sticky once chosen). Name centered
+   at bottom in black. */
+.tab-shelf-list {
+  color: #000000;
+  text-shadow: none;
+}
+.tab-shelf-list .tab-name {
+  color: #000000;
+  font-weight: 700;
+}
+.tab-shelf-list.tab-dimmed { opacity: 0.55; }
+
+/* Inline editor on an active list-tab — sits where the .tab-name span would. */
+.shelf-list-name-input {
+  field-sizing: content;
+  grid-column: 1 / 4;
+  grid-row: 2;
+  width: auto;
+  min-width: 4ch;
+  max-width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #000000;
+  font: inherit;
+  font-size: 14px;
+  text-align: center;
+  padding: 0 4px;
+  text-shadow: none;
+}
+.shelf-list-name-input::placeholder {
+  color: rgba(0,0,0,0.55);
+  font-size: 12px;
+}
+.shelf-list-name-input:focus {
+  background: rgba(0,0,0,0.12);
+  border-radius: 4px;
+}
+
+/* Search-row side buttons — colored variants. */
+.side-btn-myshelf {
+  /* user-color tinted bg + darkened user color for text/outline. Concrete
+     colors are set inline by JS so the variant stays in sync with the
+     visitor's chosen color. Saturated more than the old My Shelf overlay. */
+  font-weight: 700;
+}
+.side-btn-couch {
+  color: #000000;
+  border-color: #000000;
+  font-weight: 700;
+}
+.side-btn-color {
+  font-weight: 700;
+  /* color + border-color set inline by JS to user color */
+}
+
+/* Shelf entry — leverages the 7-col shelf-mode grid above. Note column
+   sits where comments live in list mode; the checkbox + X get their own
+   columns so they line up under ALL/help in the search row. */
+.shelf-entry .entry-comments {
+  /* Note column: textarea-like single field per movie, ~3 lines tall. */
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 4px 4px;
+  min-width: 0;
+}
+/* Click-to-expand note box — same vibe as .comment-box (small, ellipsized,
+   pointer cursor). The expand state is .shelf-note-expanded below. */
+.shelf-note-box {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.25;
+  color: #222;
+  background: #fafafa;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shelf-note-box.shelf-note-empty {
+  color: #aaa;
+  font-style: italic;
+}
+
+/* Modal-sized popup for editing the note. Same machinery as .comment-expanded
+   (modal CSS vars, viewport tracking) but taller — notes are longer than
+   comments by design. */
+.shelf-note-expanded {
+  position: fixed;
+  top:   var(--modal-top,   8vh);
+  left:  var(--modal-left,  10vw);
+  width: var(--modal-width, 80vw);
+  max-width: none;
+  height: auto;
+  min-height: 60vh;
+  max-height: 85vh;
+  white-space: normal;
+  overflow-y: auto;
+  z-index: 200;
+  background: #ffffff;
+  border: 2px solid #e94560;
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  cursor: default;
+  font-size: 16px;
+  color: #222;
+}
+.shelf-note-edit {
+  flex: 1;
+  min-height: 40vh;
+}
+
+.shelf-checkbox-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.shelf-cb {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+/* Move modal — 3-column layout: blob (left, editable) | aligned action
+   buttons (middle) | dest checkboxes (right). Width inherited from
+   .modal-content (80vw, set via applyViewportLayout). On narrow screens
+   the grid collapses to a single stacked column. */
+.shelf-manage-modal {
+  max-height: 92vh;
+  overflow-y: auto;
+}
+.manage-title {
+  font-size: 18px;
+  margin: 0 0 12px 0;
+  color: #1a1a1a;
+}
+.manage-grid {
+  display: grid;
+  grid-template-columns: 1fr 220px 220px;
+  gap: 14px;
+  align-items: stretch;
+}
+.manage-col {
+  min-width: 0;
+}
+.manage-col-buttons {
+  position: relative;
+  min-height: 240px;
+}
+.manage-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.manage-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  display: block;
+  margin-bottom: 4px;
+}
+#manage-blob {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  background: #fafafa;
+  color: #222;
+  resize: vertical;
+  white-space: pre;
+  overflow: auto;
+}
+.manage-col-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  background: #e94560;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: center;
+}
+.manage-col-btn:hover { background: #d2334d; }
+.manage-col-buttons > .manage-col-btn + .manage-col-btn {
+  /* fallback spacing when buttons are NOT absolutely positioned (mobile) */
+  margin-top: 8px;
+}
+.manage-dest-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.manage-dest-cb {
+  width: 16px;
+  height: 16px;
+}
+.manage-dest-id {
+  color: #888;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.manage-mini-btn {
+  padding: 4px 10px;
+  background: #1a1a1a;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.manage-hint {
+  font-size: 11px;
+  color: #777;
+  margin-top: 4px;
+}
+
+/* Mobile / narrow viewport — stack the three columns vertically and let
+   the buttons flow normally (alignManageButtons() detects this and clears
+   absolute positioning). */
+@media (max-width: 720px) {
+  .manage-grid {
+    grid-template-columns: 1fr;
+  }
+  .manage-col-buttons {
+    min-height: 0;
+  }
+  #manage-blob {
+    min-height: 200px;
+  }
+}
+
+/* First-time landing: secondary "Name a new list" tab next to "Type your
+   name". Lighter styling so it reads as a prompt rather than a primary CTA. */
+.tab-shelf-newlist {
+  background: #f7f7f7;
+  border: 1px dashed #bbb;
+}
+.tab-shelf-newlist .tab-name-input {
+  color: #333;
+}
+.tab-shelf-newlist .tab-name-input::placeholder {
+  color: #888;
+}
+
+/* Manage: solo list dest entry styled distinctively */
+.manage-dest-solo {
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 6px;
+}
+.manage-dest-solo .manage-dest-label {
+  font-style: italic;
+  color: #555;
+}
+
+/* Multi-list X confirm popup */
+.multi-x-list {
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.multi-x-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 4px 2px;
+}
+.multi-x-row em {
+  font-size: 10px;
+  font-weight: 600;
+  color: #2a8a4a;
+  font-style: normal;
 }

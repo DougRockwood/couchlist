@@ -182,6 +182,28 @@ try {
   db.exec('ALTER TABLE list_visitors ADD COLUMN list_name TEXT');
 } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
 
+/* Per-(visitor, movie) private note. Visible only to its visitor; rendered
+   on every shelf view (All / My Shelf / Solo / list-tab). Stored on
+   user_movies because that table already keys on (visitor, tmdb, media). */
+try {
+  db.exec('ALTER TABLE user_movies ADD COLUMN note TEXT');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
+/* Last list this visitor opened. Set whenever they hit GET /api/list/:id?
+   visitor_id=…; used to land bare /couchlist.org back on the list they
+   were last looking at when they revisit (cookie or ?UserId= path). */
+try {
+  db.exec('ALTER TABLE visitors ADD COLUMN last_list_id TEXT');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
+/* Per-list shelf tab background color. Computed once from the list's
+   member colors when the list is first read on the shelf endpoint, then
+   sticky — adding/removing members doesn't recolor the tab, so each list
+   keeps a stable identity. Future-room: a user can override it. */
+try {
+  db.exec('ALTER TABLE lists ADD COLUMN tab_color TEXT');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
 
 /* Bootstrap user_movies from existing per-list rankings.
 
@@ -244,6 +266,294 @@ try {
 
 
 /* ============================================================================
+   SECTION 2b1: ACCESS GUARD  (added 2026-04-28 — step 8)
+   ============================================================================
+   Solo lists (private=1) are owned by exactly one visitor. checkListAccess
+   returns { found: true, list } if the list is public OR the requester is
+   the owner; otherwise { found: false } (caller treats as 404 — never leak
+   the list's existence). All list-mutating endpoints call this before doing
+   any work; GET also calls it before returning bodies.
+
+   The guard is intentionally lax for the rank PUTs (/swap, /move): those
+   endpoints take a slot, and on a private list the only assigned slot is
+   the owner's, so the existing slot-based path naturally constrains writes
+   to owner-only. (Belt-and-suspenders we may add later.)
+   ============================================================================ */
+
+function checkListAccess (listId, requesterId) {
+  const list = db.prepare(
+    'SELECT id, created, private, owner_visitor_id FROM lists WHERE id = ?'
+  ).get(listId);
+  if (!list) return { found: false };
+  if (list.private && list.owner_visitor_id !== requesterId) {
+    return { found: false };                                       /* hide existence */
+  }
+  return { found: true, list };
+}
+
+
+/* ============================================================================
+   SECTION 2c: MASTER-RANK HELPERS  (added 2026-04-26 — step 2 of My Shelf rollout)
+   ============================================================================
+   user_movies is the source of truth for every visitor's ordering of every
+   movie they've encountered. The userN_rank columns on movies are now a
+   denormalized cache: for a given list, each visitor's userN_rank values are
+   the projection of their master_rank onto the movies on this list.
+
+   Reorder rule (drag/swap/move/my-ranks):
+     "Permute master_rank values among ONLY the movies on this list,
+      keeping the SET of master_rank slots unchanged."
+     Movies not on this list keep their master_rank intact; the relative
+     order of OTHER movies on the same list also stays put except where the
+     user explicitly moved something.
+     This is the algorithm that produces both of Doug's worked examples:
+       master [A,X,Y,B,C], list [A,B,C], drag→[A,C,B] => [A,X,Y,C,B]
+       master [B,A,X,Y,C], list [B,A,C], drag→[A,B,C] => [A,B,X,Y,C]
+
+   Add rule:
+     Adder: their new master_rank for the (tmdb_id,media_type) is 1; if they
+     already had it elsewhere, move it to 1 (everything else shifts down).
+     Others on the list: if they already had the key, leave master_rank
+     alone; otherwise append at end (max+1).
+
+   Remove rule:
+     Decrement nothing in master_rank if the key still exists on some other
+     list. If the deletion makes the key vanish from the entire DB, drop the
+     user_movies row for every visitor who had it and re-compact each
+     visitor's master_rank so it's contiguous 1..N again.
+
+   NULL tmdb_id movies (legacy Details paste flow) are not tracked in
+   user_movies. Their userN_rank values get a deterministic tail position
+   from the reproject helper, so they remain visible without breaking ranks.
+   ============================================================================ */
+
+function ensureUserMovieAtTop (visitor_id, tmdb_id, media_type) {
+  if (tmdb_id == null) return;
+  const existing = db.prepare(
+    'SELECT master_rank FROM user_movies WHERE visitor_id=? AND tmdb_id=? AND media_type=?'
+  ).get(visitor_id, tmdb_id, media_type);
+
+  if (existing) {
+    if (existing.master_rank === 1) return;                          // already at top
+    db.prepare(
+      'UPDATE user_movies SET master_rank = master_rank + 1 '
+      + 'WHERE visitor_id = ? AND master_rank < ?'
+    ).run(visitor_id, existing.master_rank);
+    db.prepare(
+      'UPDATE user_movies SET master_rank = 1 '
+      + 'WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?'
+    ).run(visitor_id, tmdb_id, media_type);
+  } else {
+    db.prepare(
+      'UPDATE user_movies SET master_rank = master_rank + 1 WHERE visitor_id = ?'
+    ).run(visitor_id);
+    db.prepare(
+      'INSERT INTO user_movies (visitor_id, tmdb_id, media_type, master_rank) VALUES (?, ?, ?, 1)'
+    ).run(visitor_id, tmdb_id, media_type);
+  }
+}
+
+function ensureUserMovieKeepOrAppend (visitor_id, tmdb_id, media_type) {
+  if (tmdb_id == null) return;
+  const existing = db.prepare(
+    'SELECT 1 FROM user_movies WHERE visitor_id=? AND tmdb_id=? AND media_type=?'
+  ).get(visitor_id, tmdb_id, media_type);
+  if (existing) return;
+
+  const maxRank = db.prepare(
+    'SELECT COALESCE(MAX(master_rank), 0) AS m FROM user_movies WHERE visitor_id = ?'
+  ).get(visitor_id).m;
+  db.prepare(
+    'INSERT INTO user_movies (visitor_id, tmdb_id, media_type, master_rank) VALUES (?, ?, ?, ?)'
+  ).run(visitor_id, tmdb_id, media_type, maxRank + 1);
+}
+
+/* If the (tmdb_id, media_type) is no longer present on ANY list, drop every
+   visitor's user_movies row for it and re-compact their master_ranks. Returns
+   true if the row was orphaned and cleaned up. */
+function cleanupOrphanedKey (tmdb_id, media_type) {
+  if (tmdb_id == null) return false;
+  const stillSomewhere = db.prepare(
+    'SELECT 1 FROM movies WHERE tmdb_id = ? AND media_type = ? LIMIT 1'
+  ).get(tmdb_id, media_type);
+  if (stillSomewhere) return false;
+
+  const affected = db.prepare(
+    'SELECT visitor_id, master_rank FROM user_movies WHERE tmdb_id = ? AND media_type = ?'
+  ).all(tmdb_id, media_type);
+
+  const del = db.prepare(
+    'DELETE FROM user_movies WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?'
+  );
+  const compact = db.prepare(
+    'UPDATE user_movies SET master_rank = master_rank - 1 '
+    + 'WHERE visitor_id = ? AND master_rank > ?'
+  );
+  affected.forEach(a => {
+    del.run(a.visitor_id, tmdb_id, media_type);
+    compact.run(a.visitor_id, a.master_rank);
+  });
+  return true;
+}
+
+/* Recompute the userN_rank cache column for one visitor on one list.
+   Movies on the list are sorted by master_rank ASC (NULL master_rank — i.e.
+   movies with no tmdb_id — sort to the end, then by movies.id for stability),
+   then assigned rank 1..N. Caller must have validated that visitor has a
+   slot on this list. */
+function reprojectListForVisitor (visitor_id, list_id, slot) {
+  const col = 'user' + slot + '_rank';
+  const ordered = db.prepare(
+    'SELECT m.id FROM movies m '
+    + 'LEFT JOIN user_movies um '
+    + '  ON um.visitor_id = ? AND um.tmdb_id = m.tmdb_id AND um.media_type = m.media_type '
+    + 'WHERE m.list_id = ? '
+    + 'ORDER BY (um.master_rank IS NULL), um.master_rank, m.id'
+  ).all(visitor_id, list_id);
+
+  const upd = db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?');
+  ordered.forEach((m, i) => upd.run(i + 1, m.id));
+}
+
+function reprojectListForAllVisitors (list_id) {
+  const slots = db.prepare(
+    'SELECT slot, visitor_id FROM list_visitors WHERE list_id = ?'
+  ).all(list_id);
+  slots.forEach(s => reprojectListForVisitor(s.visitor_id, list_id, s.slot));
+}
+
+/* Re-project every list this visitor is on. Called whenever the visitor's
+   master_rank values change, since other lists' projections of shared keys
+   depend on master_rank too. Cost is O(lists * movies-per-list); fine for
+   the scale this app operates at. */
+function reprojectAllListsForVisitor (visitor_id) {
+  const memberships = db.prepare(
+    'SELECT list_id, slot FROM list_visitors WHERE visitor_id = ?'
+  ).all(visitor_id);
+  memberships.forEach(m => reprojectListForVisitor(visitor_id, m.list_id, m.slot));
+}
+
+/* Permute master_rank values among ONLY the keys passed in. Used by the
+   My Shelf page when the visitor reorders their movies on the "your" tab —
+   movies they didn't add (or that aren't in the filtered visible list) keep
+   their master_rank untouched. Errors out if any key is missing from
+   user_movies for this visitor (caller should never pass orphaned keys). */
+function setMasterProjectionByKeys (visitor_id, ordered_keys) {
+  const slots = [];
+  for (const k of ordered_keys) {
+    const r = db.prepare(
+      'SELECT master_rank FROM user_movies '
+      + 'WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?'
+    ).get(visitor_id, k.tmdb_id, k.media_type);
+    if (!r) throw new Error('key not in master: ' + k.tmdb_id + ':' + k.media_type);
+    slots.push(r.master_rank);
+  }
+  const sortedSlots = slots.slice().sort((a, b) => a - b);
+
+  const stmt = db.prepare(
+    'UPDATE user_movies SET master_rank = ? '
+    + 'WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?'
+  );
+  ordered_keys.forEach((k, i) => stmt.run(-(i + 1), visitor_id, k.tmdb_id, k.media_type));
+  ordered_keys.forEach((k, i) => stmt.run(sortedSlots[i], visitor_id, k.tmdb_id, k.media_type));
+}
+
+/* Apply a desired list ordering for one visitor by permuting which master_rank
+   slot each of this list's movies occupies. Master_ranks of movies NOT on
+   this list (and NULL-tmdb movies) are untouched.
+
+   `ordered_movie_ids` is a list of movies.id values in the desired list-order;
+   movies on the list but absent from this array get appended (preserving
+   their current relative master_rank order).  */
+function setListProjection (visitor_id, list_id, ordered_movie_ids) {
+  const allOnList = db.prepare(
+    'SELECT m.id, m.tmdb_id, m.media_type, um.master_rank '
+    + 'FROM movies m '
+    + 'LEFT JOIN user_movies um '
+    + '  ON um.visitor_id = ? AND um.tmdb_id = m.tmdb_id AND um.media_type = m.media_type '
+    + 'WHERE m.list_id = ?'
+  ).all(visitor_id, list_id);
+
+  /* skip movies with no tmdb_id (they can't be in user_movies) */
+  const trackable = allOnList.filter(m => m.tmdb_id != null);
+
+  /* full target order: requested ids first, then remaining trackable movies
+     ordered by their current master_rank (NULL last, then id) */
+  const requested = new Set(ordered_movie_ids);
+  const tail = trackable
+    .filter(m => !requested.has(m.id))
+    .sort((a, b) => {
+      if (a.master_rank == null && b.master_rank == null) return a.id - b.id;
+      if (a.master_rank == null) return 1;
+      if (b.master_rank == null) return -1;
+      return a.master_rank - b.master_rank;
+    });
+
+  const byId = new Map(allOnList.map(m => [m.id, m]));
+  const orderedKeys = [];
+  for (const id of ordered_movie_ids) {
+    const m = byId.get(id);
+    if (m && m.tmdb_id != null) orderedKeys.push(m);
+  }
+  const finalOrder = orderedKeys.concat(tail);                       // movie objects in target list-order
+
+  /* the SET of master_rank slots occupied by these movies stays the same;
+     we just reassign which key gets which slot. NULL master_rank means the
+     visitor doesn't yet have a user_movies entry for that key — give it one
+     by appending at the end first. */
+  finalOrder.forEach(m => {
+    if (m.master_rank == null) {
+      ensureUserMovieKeepOrAppend(visitor_id, m.tmdb_id, m.media_type);
+      m.master_rank = db.prepare(
+        'SELECT master_rank FROM user_movies WHERE visitor_id=? AND tmdb_id=? AND media_type=?'
+      ).get(visitor_id, m.tmdb_id, m.media_type).master_rank;
+    }
+  });
+
+  const slotValues = finalOrder
+    .map(m => m.master_rank)
+    .sort((a, b) => a - b);                                          // ascending master_rank slots
+
+  /* assign keys to slots in order. Two-phase to avoid collisions: first
+     stamp each key with a sentinel negative rank, then write the real one. */
+  const stampNeg = db.prepare(
+    'UPDATE user_movies SET master_rank = ? '
+    + 'WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?'
+  );
+  finalOrder.forEach((m, i) => {
+    stampNeg.run(-(i + 1), visitor_id, m.tmdb_id, m.media_type);
+  });
+  finalOrder.forEach((m, i) => {
+    stampNeg.run(slotValues[i], visitor_id, m.tmdb_id, m.media_type);
+  });
+}
+
+/* findVisitorMovieOnAnotherList — for the solo-list "already-elsewhere" guard.
+   Returns { list_id, list_name } for some non-solo list `vid` is on that
+   already has this (tmdb_id, media_type), or undefined.
+
+   "Non-solo" here means: any list that isn't a private list owned by `vid`.
+   That covers both the canonical solo (id = vid.slice(0,8), private=1,
+   owner=vid) and any future per-user private list. The caller passes
+   `excludeListId` so the search-bar Solo-tab path can also exclude itself
+   defensively (e.g. if the lazy-create just happened in the same tx). */
+function findVisitorMovieOnAnotherList (vid, tmdb_id, media_type, excludeListId) {
+  return db.prepare(
+    'SELECT m.list_id, lv.list_name '
+    + 'FROM movies m '
+    + 'JOIN list_visitors lv '
+    +   'ON lv.list_id = m.list_id AND lv.visitor_id = ? '
+    + 'JOIN lists l ON l.id = m.list_id '
+    + 'WHERE m.tmdb_id = ? AND m.media_type = ? '
+    +   'AND m.list_id != ? '
+    +   'AND (l.private = 0 OR l.owner_visitor_id != ?) '
+    + 'ORDER BY m.id DESC '
+    + 'LIMIT 1'
+  ).get(vid, tmdb_id, media_type, excludeListId || '', vid);
+}
+
+
+/* ============================================================================
    SECTION 3: MIDDLEWARE
    ============================================================================ */
 
@@ -273,7 +583,9 @@ app.use(express.static(path.join(__dirname, 'public'), {
    ============================================================================ */
 
 app.get('/api/visitor/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM visitors WHERE id = ?').get(req.params.id);
+  const row = db.prepare(
+    'SELECT id, name, color, last_list_id FROM visitors WHERE id = ?'
+  ).get(req.params.id);
   if (!row) return res.status(404).json({ error: 'visitor not found' });
   res.json(row);
 });
@@ -298,10 +610,575 @@ app.put('/api/visitor/:id', (req, res) => {
     }
   }
 
-  db.prepare('INSERT OR REPLACE INTO visitors (id, name, color) VALUES (?, ?, ?)')
-    .run(req.params.id, name, color);
+  /* UPSERT preserves last_list_id (and any other future columns). INSERT OR
+     REPLACE would delete-and-recreate the row, nulling out columns we didn't
+     pass — fine when only (id,name,color) existed, harmful now that
+     last_list_id rides on this row. */
+  db.prepare(
+    'INSERT INTO visitors (id, name, color) VALUES (?, ?, ?) '
+    + 'ON CONFLICT(id) DO UPDATE SET name = excluded.name, color = excluded.color'
+  ).run(req.params.id, name, color);
   res.json({ id: req.params.id, name, color });
 });
+
+/* ============================================================================
+   COLOR HELPERS — used to mix a list's member colors into one solid tab
+   color. Runs server-side once per list (lazy, on first shelf read) and
+   sticks via lists.tab_color. The mix favors vibrancy over averaging
+   accuracy: hue is the circular mean (so red/red doesn't average to cyan),
+   sat/lightness are clamped into a readable band, and a small random
+   jitter keeps two lists with similar membership visually distinct.
+   ============================================================================ */
+
+function parseHexColor (hex) {
+  if (typeof hex !== 'string') return null;
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function rgbToHsl (rgb) {
+  const r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];                                  // achromatic
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r)      h = (g - b) / d + (g < b ? 6 : 0);
+  else if (max === g) h = (b - r) / d + 2;
+  else                h = (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+
+function hslToHex (h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = h / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r1 = 0, g1 = 0, b1 = 0;
+  if (hp < 1)      { r1 = c; g1 = x; }
+  else if (hp < 2) { r1 = x; g1 = c; }
+  else if (hp < 3) { g1 = c; b1 = x; }
+  else if (hp < 4) { g1 = x; b1 = c; }
+  else if (hp < 5) { r1 = x; b1 = c; }
+  else             { r1 = c; b1 = x; }
+  const m = l - c / 2;
+  const to255 = v => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+  return '#' + to255(r1) + to255(g1) + to255(b1);
+}
+
+function pickListColor (memberColors) {
+  const hsls = (memberColors || []).map(parseHexColor).filter(Boolean).map(rgbToHsl);
+  if (hsls.length === 0) {
+    /* No members yet — give the list a random pastel so it still has identity. */
+    return hslToHex(Math.random() * 360, 0.65, 0.65);
+  }
+  const sumX = hsls.reduce((a, [h]) => a + Math.cos(h * Math.PI / 180), 0);
+  const sumY = hsls.reduce((a, [h]) => a + Math.sin(h * Math.PI / 180), 0);
+  let h = Math.atan2(sumY / hsls.length, sumX / hsls.length) * 180 / Math.PI;
+  if (h < 0) h += 360;
+  let s = hsls.reduce((a, [, sat]) => a + sat, 0) / hsls.length;
+  let l = hsls.reduce((a, [, , lt]) => a + lt, 0) / hsls.length;
+
+  /* Clamp+jitter — keeps the result vibrant and readable with black text,
+     and ensures two lists with similar member colors land different spots. */
+  h = (h + (Math.random() - 0.5) * 30 + 360) % 360;
+  s = Math.min(0.85, Math.max(0.55, s + (Math.random() - 0.5) * 0.20));
+  l = Math.min(0.72, Math.max(0.55, l + (Math.random() - 0.5) * 0.10));
+  return hslToHex(h, s, l);
+}
+
+
+/* GET /api/visitor/:id/shelf — everything needed to render My Shelf in one
+   response.
+
+   Returns:
+     {
+       visitor: { id, name, color },
+       lists:   [ { id, list_name, ready, slot, private, owner_visitor_id, created } ],
+       movies:  [ {
+         tmdb_id, media_type, title, year, poster, master_rank,
+         added_by_me,            // true if adder on AT LEAST one list this movie is on
+         list_entries: [
+           { list_id, movie_id, added_here }   // one row per (movie key, list)
+         ]
+       } ]
+     }
+
+   Movies are sorted by master_rank ascending. The visitor only ever sees
+   list_entries for lists THEY are also on (we never leak movies from lists
+   they aren't a member of). `added_here` lets the frontend choose whether
+   to render an X-to-remove on a per-list-tab row.
+
+   404 if the visitor row doesn't exist; an empty shelf is returned for
+   visitors who exist but have no list memberships yet. */
+app.get('/api/visitor/:id/shelf', (req, res) => {
+  const vid = req.params.id;
+
+  const visitor = db.prepare('SELECT id, name, color FROM visitors WHERE id = ?').get(vid);
+  if (!visitor) return res.status(404).json({ error: 'visitor not found' });
+
+  const lists = db.prepare(`
+    SELECT l.id, l.created, l.private, l.owner_visitor_id, l.tab_color,
+           lv.slot, lv.list_name, lv.ready
+    FROM list_visitors lv
+    JOIN lists l ON l.id = lv.list_id
+    WHERE lv.visitor_id = ?
+    ORDER BY l.created, l.id
+  `).all(vid).map(r => ({
+    id: r.id,
+    list_name: r.list_name,
+    ready: r.ready !== 0,
+    slot: r.slot,
+    private: r.private,
+    owner_visitor_id: r.owner_visitor_id,
+    created: r.created,
+    tab_color: r.tab_color || null,           // lazy-filled below
+    member_colors: []                         // filled below
+  }));
+
+  /* per-list member colors (slot order) — drives the shelf list-tab's
+     gradient text. Empty for the solo list since the only member is
+     the visitor themselves; renderer falls back to the user color. */
+  if (lists.length) {
+    const placeholders = lists.map(() => '?').join(',');
+    const memberRows = db.prepare(
+      'SELECT lv.list_id, v.color, lv.slot '
+      + 'FROM list_visitors lv '
+      + 'JOIN visitors v ON v.id = lv.visitor_id '
+      + 'WHERE lv.list_id IN (' + placeholders + ') '
+      + 'ORDER BY lv.list_id, lv.slot'
+    ).all(lists.map(l => l.id));
+    const colorsByList = new Map();
+    for (const r of memberRows) {
+      if (!colorsByList.has(r.list_id)) colorsByList.set(r.list_id, []);
+      colorsByList.get(r.list_id).push(r.color);
+    }
+    lists.forEach(l => { l.member_colors = colorsByList.get(l.id) || []; });
+
+    /* Lazy-fill lists.tab_color the first time we see a list without one.
+       Sticky after — even if members change later, the tab color stays. */
+    const setTabColor = db.prepare('UPDATE lists SET tab_color = ? WHERE id = ?');
+    lists.forEach(l => {
+      if (!l.tab_color) {
+        l.tab_color = pickListColor(l.member_colors);
+        setTabColor.run(l.tab_color, l.id);
+      }
+    });
+  }
+
+  /* one row per (movie key, list this visitor is on); group in JS so each
+     grouped row carries the per-list movie_id + added_here flag */
+  const rawRows = db.prepare(`
+    SELECT
+      m.tmdb_id, m.media_type, m.title, m.year, m.poster,
+      m.id AS movie_id, m.list_id, m.added_by,
+      um.master_rank, um.note
+    FROM movies m
+    JOIN user_movies um
+      ON um.visitor_id = ? AND um.tmdb_id = m.tmdb_id AND um.media_type = m.media_type
+    JOIN list_visitors lv
+      ON lv.list_id = m.list_id AND lv.visitor_id = ?
+    ORDER BY um.master_rank, m.list_id
+  `).all(vid, vid);
+
+  const byKey = new Map();                                            // (tmdb_id|media_type) → grouped movie
+  for (const r of rawRows) {
+    const k = r.tmdb_id + '|' + r.media_type;
+    let group = byKey.get(k);
+    if (!group) {
+      group = {
+        tmdb_id: r.tmdb_id,
+        media_type: r.media_type,
+        title: r.title,
+        year: r.year,
+        poster: r.poster,
+        master_rank: r.master_rank,
+        note: r.note || '',
+        added_by_me: false,
+        list_entries: []
+      };
+      byKey.set(k, group);
+    }
+    const addedHere = r.added_by === vid;
+    group.list_entries.push({
+      list_id: r.list_id,
+      movie_id: r.movie_id,
+      added_here: addedHere
+    });
+    if (addedHere) group.added_by_me = true;
+  }
+  /* sorted by master_rank because the source query was sorted that way and
+     Map preserves insertion order */
+  const movies = Array.from(byKey.values());
+
+  res.json({ visitor, lists, movies });
+});
+
+
+/* PUT /api/visitor/:id/shelf-ranks — reorder master_rank among a subset of
+   the visitor's movies (used by the My Shelf "your" tab drag).
+
+   Body: { ordered_keys: [ { tmdb_id, media_type }, ... ] }
+
+   Master_rank values for movies NOT in ordered_keys are untouched. The
+   ordered_keys list MUST contain only keys this visitor has in user_movies;
+   sending unknown keys returns 400 (we don't silently create entries here,
+   to avoid a malformed client payload corrupting the master order).
+   Re-projects all of this visitor's lists on success. */
+app.put('/api/visitor/:id/shelf-ranks', (req, res) => {
+  const vid = req.params.id;
+  const { ordered_keys } = req.body;
+
+  if (!Array.isArray(ordered_keys)) {
+    return res.status(400).json({ error: 'ordered_keys must be an array' });
+  }
+
+  /* validate every key — same shape rules as the rest of the app */
+  for (const k of ordered_keys) {
+    if (!k || typeof k !== 'object') return res.status(400).json({ error: 'invalid key' });
+    if (!Number.isInteger(k.tmdb_id) || k.tmdb_id <= 0) {
+      return res.status(400).json({ error: 'invalid tmdb_id in key' });
+    }
+    if (k.media_type !== 'movie' && k.media_type !== 'tv') {
+      return res.status(400).json({ error: 'invalid media_type in key' });
+    }
+  }
+
+  const visitor = db.prepare('SELECT id FROM visitors WHERE id = ?').get(vid);
+  if (!visitor) return res.status(404).json({ error: 'visitor not found' });
+
+  try {
+    const tx = db.transaction(() => {
+      setMasterProjectionByKeys(vid, ordered_keys);
+      reprojectAllListsForVisitor(vid);
+    });
+    tx();
+  } catch (e) {
+    if (/^key not in master/.test(e.message)) {
+      return res.status(400).json({ error: e.message });
+    }
+    throw e;
+  }
+
+  res.json({ ok: true });
+});
+
+
+/* PUT /api/visitor/:id/note — set the visitor's private note for one movie key.
+   Body: { tmdb_id, media_type, note }. Empty/whitespace note clears it.
+   404 if the visitor has no user_movies row for that key (we don't auto-create
+   here — notes only attach to movies you've actually encountered). */
+app.put('/api/visitor/:id/note', (req, res) => {
+  const vid = req.params.id;
+  const { tmdb_id, media_type, note } = req.body;
+
+  if (!Number.isInteger(tmdb_id) || tmdb_id <= 0) {
+    return res.status(400).json({ error: 'invalid tmdb_id' });
+  }
+  if (media_type !== 'movie' && media_type !== 'tv') {
+    return res.status(400).json({ error: 'invalid media_type' });
+  }
+  const trimmed = (typeof note === 'string') ? note.trim() : '';
+  const value   = trimmed === '' ? null : trimmed.slice(0, 2000);
+
+  const result = db.prepare(`
+    UPDATE user_movies SET note = ?
+    WHERE visitor_id = ? AND tmdb_id = ? AND media_type = ?
+  `).run(value, vid, tmdb_id, media_type);
+
+  if (result.changes === 0) return res.status(404).json({ error: 'no matching user_movies row' });
+  res.json({ ok: true, note: value || '' });
+});
+
+
+/* POST /api/visitor/:id/copy — bulk-copy movies to multiple destination lists.
+
+   Body: {
+     items: [ { tmdb_id, media_type, title, year, poster }, ... ],
+     dest_list_ids: [ "...", ... ]
+   }
+
+   For each (item, dest_list_id) pair:
+     - skip if the item is already on dest_list (duplicate by tmdb_id+media_type)
+     - auto-join the visitor to dest_list if they aren't already on it
+     - insert a movie row on dest_list with added_by = visitor_id
+     - for every visitor on dest_list, ensure user_movies entry. The
+       MASTER_RANK STAYS PUT — unlike POST /movies, copy does NOT bump the
+       adder's master_rank to 1 (per Doug's spec: "they maintain your rank
+       like they would from your main user tab")
+     - re-project all affected visitors' lists at the end
+
+   Returns { copied: N, skipped: [{tmdb_id, media_type, list_id, reason}] }. */
+app.post('/api/visitor/:id/copy', (req, res) => {
+  const vid = req.params.id;
+  const { items, dest_list_ids } = req.body;
+
+  if (!Array.isArray(items) || !Array.isArray(dest_list_ids)) {
+    return res.status(400).json({ error: 'items and dest_list_ids required' });
+  }
+  const visitor = db.prepare('SELECT id FROM visitors WHERE id = ?').get(vid);
+  if (!visitor) return res.status(404).json({ error: 'visitor not found' });
+
+  /* validate every item — same rules as POST /movies */
+  for (const item of items) {
+    if (!item || typeof item !== 'object') return res.status(400).json({ error: 'invalid item' });
+    if (!Number.isInteger(item.tmdb_id) || item.tmdb_id <= 0) {
+      return res.status(400).json({ error: 'invalid tmdb_id' });
+    }
+    if (item.media_type !== 'movie' && item.media_type !== 'tv') {
+      return res.status(400).json({ error: 'invalid media_type' });
+    }
+    if (item.poster != null && item.poster !== ''
+        && !(typeof item.poster === 'string' && /^\/[A-Za-z0-9_.-]+$/.test(item.poster))) {
+      return res.status(400).json({ error: 'invalid poster' });
+    }
+    if (item.year != null && item.year !== '' && item.year !== '?') {
+      const yn = Number(item.year);
+      if (!Number.isInteger(yn) || yn < 1800 || yn > 2100) {
+        return res.status(400).json({ error: 'invalid year' });
+      }
+    }
+  }
+
+  const skipped = [];
+  let copied = 0;
+
+  const soloId = vid.slice(0, 8);
+
+  const tx = db.transaction(() => {
+    const affectedListIds = new Set();
+    const affectedVisitorIds = new Set();
+
+    for (const dest of dest_list_ids) {
+      /* create dest list if it doesn't exist */
+      const lst = db.prepare('SELECT id FROM lists WHERE id = ?').get(dest);
+      if (!lst) {
+        db.prepare('INSERT INTO lists (id, created) VALUES (?, ?)')
+          .run(dest, new Date().toISOString().split('T')[0]);
+      }
+      const destLst = db.prepare(
+        'SELECT private, owner_visitor_id FROM lists WHERE id = ?'
+      ).get(dest);
+      const destIsOwnSolo =
+        destLst && destLst.private === 1 && destLst.owner_visitor_id === vid;
+
+      /* auto-join visitor if needed */
+      let slot = db.prepare(
+        'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+      ).get(dest, vid);
+      if (!slot) {
+        const taken = db.prepare(
+          'SELECT slot FROM list_visitors WHERE list_id = ? ORDER BY slot'
+        ).all(dest).map(r => r.slot);
+        let next = null;
+        for (let s = 1; s <= 10; s++) { if (!taken.includes(s)) { next = s; break; } }
+        if (!next) {
+          for (const item of items) {
+            skipped.push({ tmdb_id: item.tmdb_id, media_type: item.media_type,
+              list_id: dest, reason: 'list full' });
+          }
+          continue;
+        }
+        db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
+          .run(dest, next, vid);
+        slot = { slot: next };
+        /* seed master_rank entries for movies already on the dest list */
+        const existingMovies = db.prepare(
+          'SELECT tmdb_id, media_type FROM movies WHERE list_id = ? ORDER BY id'
+        ).all(dest);
+        existingMovies.forEach(m => {
+          ensureUserMovieKeepOrAppend(vid, m.tmdb_id, m.media_type);
+        });
+      }
+      affectedListIds.add(dest);
+
+      for (const item of items) {
+        const validYear =
+          item.year == null || item.year === '' ? null
+          : item.year === '?' ? '?' : Number(item.year);
+        const validPoster =
+          item.poster == null || item.poster === '' ? null : item.poster;
+
+        /* Solo guard: when copying TO the user's own solo, skip any item
+           they already have on another (non-solo) list. The frontend reads
+           `reason` + `other_list_*` to surface a "not added to solo, you
+           already have it on X" line in the modal alert. */
+        if (destIsOwnSolo) {
+          const elsewhere = findVisitorMovieOnAnotherList(
+            vid, item.tmdb_id, item.media_type, dest
+          );
+          if (elsewhere) {
+            skipped.push({
+              tmdb_id: item.tmdb_id, media_type: item.media_type,
+              title: item.title || '',
+              list_id: dest,
+              reason: 'already-on-another-list',
+              other_list_id: elsewhere.list_id,
+              other_list_name: elsewhere.list_name || null
+            });
+            continue;
+          }
+        }
+
+        const exists = db.prepare(
+          'SELECT id FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
+        ).get(dest, item.tmdb_id, item.media_type);
+        if (exists) {
+          skipped.push({ tmdb_id: item.tmdb_id, media_type: item.media_type,
+            list_id: dest, reason: 'already on list' });
+          continue;
+        }
+
+        db.prepare(
+          'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by) '
+          + 'VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).run(dest, item.tmdb_id, item.media_type, item.title || '',
+              validYear, validPoster, vid);
+
+        /* every slot on this list needs a master_rank entry — KEEP existing
+           (this is the difference from POST /movies); append at end if absent */
+        const slots = db.prepare(
+          'SELECT slot, visitor_id FROM list_visitors WHERE list_id = ?'
+        ).all(dest);
+        slots.forEach(s => {
+          ensureUserMovieKeepOrAppend(s.visitor_id, item.tmdb_id, item.media_type);
+          affectedVisitorIds.add(s.visitor_id);
+        });
+
+        copied++;
+      }
+    }
+
+    /* re-project every affected visitor's full list set */
+    affectedVisitorIds.forEach(v => reprojectAllListsForVisitor(v));
+    /* and any visitors who were already on a dest list but not adders */
+    affectedListIds.forEach(lid => reprojectListForAllVisitors(lid));
+  });
+  tx();
+
+  res.json({ copied, skipped });
+});
+
+
+/* POST /api/visitor/:id/solo-add — add a movie to the visitor's solo list.
+
+   The solo list (formerly "no one can know") is a per-visitor private list
+   used to stash movies that aren't on any couchlist. ID convention: first 8
+   chars of the 10-char visitor ID. Lazily created on first use, flagged
+   private=1 with owner_visitor_id=vid so it's hidden from non-owners.
+
+   Body: { tmdb_id, media_type, title, year, poster }
+   Returns: the inserted movie row. */
+app.post('/api/visitor/:id/solo-add', (req, res) => {
+  const vid = req.params.id;
+  const visitor = db.prepare('SELECT id FROM visitors WHERE id = ?').get(vid);
+  if (!visitor) return res.status(404).json({ error: 'visitor not found' });
+
+  /* validate item — same rules as POST /movies + /copy */
+  const { tmdb_id, media_type, title, year, poster } = req.body;
+  const mediaType = media_type === 'tv' ? 'tv' : 'movie';
+  if (!Number.isInteger(tmdb_id) || tmdb_id <= 0) {
+    return res.status(400).json({ error: 'invalid tmdb_id' });
+  }
+  let validYear;
+  if (year == null || year === '' || year === '?') {
+    validYear = (year === '?') ? '?' : null;
+  } else {
+    const yn = Number(year);
+    if (!Number.isInteger(yn) || yn < 1800 || yn > 2100) {
+      return res.status(400).json({ error: 'invalid year' });
+    }
+    validYear = yn;
+  }
+  let validPoster = null;
+  if (poster != null && poster !== '') {
+    if (!(typeof poster === 'string' && /^\/[A-Za-z0-9_.-]+$/.test(poster))) {
+      return res.status(400).json({ error: 'invalid poster' });
+    }
+    validPoster = poster;
+  }
+
+  const soloId = vid.slice(0, 8);
+
+  /* Solo guard: refuse to add if the visitor already has this movie on any
+     non-solo list of theirs. Solo is supposed to be the "movies that aren't
+     anywhere else" stash. Returns { skipped: true, list_id, list_name } so
+     the client can show a "not added to solo, already on X" popup. */
+  const elsewhere = findVisitorMovieOnAnotherList(vid, tmdb_id, mediaType, soloId);
+  if (elsewhere) {
+    return res.json({
+      skipped: true,
+      reason: 'already-on-another-list',
+      title: title || '',
+      list_id: elsewhere.list_id,
+      list_name: elsewhere.list_name || null
+    });
+  }
+
+  const tx = db.transaction(() => {
+    let lst = db.prepare('SELECT * FROM lists WHERE id = ?').get(soloId);
+    if (!lst) {
+      db.prepare(
+        'INSERT INTO lists (id, created, private, owner_visitor_id) VALUES (?, ?, 1, ?)'
+      ).run(soloId, new Date().toISOString().split('T')[0], vid);
+      lst = db.prepare('SELECT * FROM lists WHERE id = ?').get(soloId);
+    } else if (lst.owner_visitor_id !== vid) {
+      /* Extreme edge case — visitor's first-8-of-id collides with an
+         existing public list. Refuse rather than silently pivot the list to
+         private under someone else. */
+      throw new Error('solo id collision');
+    }
+
+    /* auto-join the visitor (slot 1) */
+    let slot = db.prepare(
+      'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+    ).get(soloId, vid);
+    if (!slot) {
+      db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, 1, ?)')
+        .run(soloId, vid);
+      const existingMovies = db.prepare(
+        'SELECT tmdb_id, media_type FROM movies WHERE list_id = ? ORDER BY id'
+      ).all(soloId);
+      existingMovies.forEach(m => {
+        ensureUserMovieKeepOrAppend(vid, m.tmdb_id, m.media_type);
+      });
+      slot = { slot: 1 };
+    }
+
+    /* duplicate? same tmdb item already on solo */
+    const dup = db.prepare(
+      'SELECT * FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
+    ).get(soloId, tmdb_id, mediaType);
+    if (dup) return dup;
+
+    const result = db.prepare(
+      'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by) '
+      + 'VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(soloId, tmdb_id, mediaType, title || '', validYear, validPoster, vid);
+    const newId = result.lastInsertRowid;
+
+    /* adder semantics — master_rank to top */
+    ensureUserMovieAtTop(vid, tmdb_id, mediaType);
+
+    reprojectAllListsForVisitor(vid);
+
+    return db.prepare('SELECT * FROM movies WHERE id = ?').get(newId);
+  });
+
+  let row;
+  try { row = tx(); }
+  catch (e) {
+    if (e.message === 'solo id collision') {
+      return res.status(409).json({ error: 'solo list id collides with existing public list' });
+    }
+    throw e;
+  }
+  res.json(row);
+});
+
 
 /* DELETE /api/visitor/:id — only succeeds if the visitor is "untouched":
    no name set AND no slot in any list. Used by the Details paste flow when
@@ -331,10 +1208,16 @@ app.delete('/api/visitor/:id', (req, res) => {
    ============================================================================
    Returns everything about a list in one response:
    {
-     list:     { id, created },
-     visitors: { "1": { id, name, color, slot }, "2": { ... }, ... },
-     movies:   [ { id, tmdb_id, title, year, poster, added_by,
-                   user1_rank, user1_comment, user2_rank, ... }, ... ]
+     list:              { id, created, tab_color, ... },
+     visitors:          { "1": { id, name, color, slot, ready }, "2": ... },
+     movies:            [ { id, tmdb_id, title, year, poster, added_by,
+                            user1_rank, user1_comment, user2_rank, ... }, ... ],
+     your_list_name:    requester's per-user nickname (null if not on list),
+     default_list_name: first non-empty nickname in slot order (only set
+                        when the requester ISN'T on the list — used by the
+                        client to seed the Couch tab nickname for fresh
+                        shared-URL arrivals so they inherit "Movie Night"
+                        instead of a random Couch#NNN)
    }
 
    Visitors are keyed by SLOT NUMBER (not visitor ID). This makes it easy
@@ -346,17 +1229,28 @@ app.delete('/api/visitor/:id', (req, res) => {
 
 app.get('/api/list/:id', (req, res) => {
   const listId = req.params.id;
+  /* If ?visitor_id=xxx is passed AND that visitor is on this list, the
+     response includes `your_list_name` (their per-user nickname for the
+     list). Other visitors' nicknames stay private. Visitors who AREN'T
+     on the list yet (fresh shared-URL arrivals) get `default_list_name`
+     instead — the first non-empty nickname in slot order. Slot 1 IS the
+     creator, so this naturally inherits the creator's nickname when set,
+     with a graceful fallback to other members otherwise. */
+  const requesterId = req.query.visitor_id;
 
-  /* fetch the list itself */
+  const access = checkListAccess(listId, requesterId);
+  if (!access.found) return res.status(404).json({ error: 'list not found' });
   const list = db.prepare('SELECT * FROM lists WHERE id = ?').get(listId);
-  if (!list) return res.status(404).json({ error: 'list not found' });
 
-  /* fetch all movies — they already contain ranks and comments inline */
   const movies = db.prepare('SELECT * FROM movies WHERE list_id = ?').all(listId);
 
-  /* fetch slot assignments and look up each visitor's profile */
-  const slots = db.prepare('SELECT * FROM list_visitors WHERE list_id = ?').all(listId);
-  const visitors = {};                                             // keyed by slot number
+  const slots = db.prepare(
+    'SELECT * FROM list_visitors WHERE list_id = ? ORDER BY slot'
+  ).all(listId);
+  const visitors = {};
+  let yourListName = null;
+  let defaultListName = null;
+  let requesterIsMember = false;
   slots.forEach(s => {
     const v = db.prepare('SELECT * FROM visitors WHERE id = ?').get(s.visitor_id);
     if (v) {
@@ -365,23 +1259,52 @@ app.get('/api/list/:id', (req, res) => {
         ready: s.ready !== 0
       };
     }
+    if (requesterId && s.visitor_id === requesterId) {
+      yourListName = s.list_name || null;
+      requesterIsMember = true;
+    }
+    if (defaultListName === null && s.list_name && s.list_name.trim()) {
+      defaultListName = s.list_name;
+    }
   });
+  /* Only suggest a default nickname when the requester isn't already on the
+     list — once they've joined, `your_list_name` (even if null) is the
+     authoritative answer for their per-user nickname. */
+  if (requesterIsMember) defaultListName = null;
 
-  res.json({ list, visitors, movies });
+  /* Track this list as the requester's last-viewed (used to restore them on
+     bare /couchlist.org). Only update if the visitor row already exists —
+     don't auto-create one here, since GET /list is hit before names are set. */
+  if (requesterId) {
+    db.prepare('UPDATE visitors SET last_list_id = ? WHERE id = ?')
+      .run(listId, requesterId);
+  }
+
+  /* Lazy-fill lists.tab_color so the list-page Couch tab can paint its
+     stacked label in the same mixed color the shelf list-tab uses. Same
+     sticky semantics as the shelf path. */
+  if (!list.tab_color) {
+    const memberColors = Object.values(visitors).map(v => v.color).filter(Boolean);
+    list.tab_color = pickListColor(memberColors);
+    db.prepare('UPDATE lists SET tab_color = ? WHERE id = ?').run(list.tab_color, listId);
+  }
+
+  res.json({
+    list, visitors, movies,
+    your_list_name: yourListName,
+    default_list_name: defaultListName
+  });
 });
 
 
 /* ============================================================================
    SECTION 6: JOIN LIST — POST /api/list/:id/join
    ============================================================================
-   Assigns a visitor to the next available slot (1-10) on this list.
-   If the visitor already has a slot, returns that slot.
-   If all 10 slots are taken, returns an error.
-
-   After assigning a slot, initializes ranks for all existing movies:
-   each movie gets a sequential rank (1, 2, 3...) in movie-ID order.
-   This means a new visitor immediately has a complete ranking — no gaps,
-   no NULLs in their column.
+   Assigns a visitor to the next available slot (1-10) on this list, then
+   ensures they have a master_rank entry for every movie already on the list
+   (appending unfamiliar keys at the end of their master order, leaving any
+   keys they already had alone). Re-projects userN_rank cache for this
+   visitor's slot.
 
    Body: { visitor_id }
    Returns: { slot: N }
@@ -391,46 +1314,50 @@ app.post('/api/list/:id/join', (req, res) => {
   const listId = req.params.id;
   const { visitor_id } = req.body;
 
-  /* create the list if it doesn't exist yet — so the first visitor to set
-     their name on a brand-new URL becomes visible via GET /api/list/:id */
+  const access = checkListAccess(listId, visitor_id);
+  if (!access.found) {
+    /* If the list doesn't exist at all, the visitor is creating it (public).
+       But if it exists and they're not allowed in (private + non-owner),
+       refuse without leaking. */
+    const existsAtAll = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
+    if (existsAtAll) return res.status(404).json({ error: 'list not found' });
+  }
+
   const existingList = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
   if (!existingList) {
     db.prepare('INSERT INTO lists (id, created) VALUES (?, ?)')
       .run(listId, new Date().toISOString().split('T')[0]);
   }
 
-  /* check if this visitor already has a slot on this list */
   const existing = db.prepare(
     'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
   ).get(listId, visitor_id);
-  if (existing) return res.json({ slot: existing.slot });          // already joined
+  if (existing) return res.json({ slot: existing.slot });
 
-  /* find the next open slot (1-10) */
   const taken = db.prepare(
     'SELECT slot FROM list_visitors WHERE list_id = ? ORDER BY slot'
   ).all(listId).map(r => r.slot);
-
   let nextSlot = null;
   for (let s = 1; s <= 10; s++) {
     if (!taken.includes(s)) { nextSlot = s; break; }
   }
   if (!nextSlot) return res.status(400).json({ error: 'list full (max 10 visitors)' });
 
-  /* assign the slot */
-  db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
-    .run(listId, nextSlot, visitor_id);
+  const join = db.transaction(() => {
+    db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
+      .run(listId, nextSlot, visitor_id);
 
-  /* initialize ranks for all existing movies in this slot's column
-     each movie gets a sequential rank (1, 2, 3...) in movie-ID order */
-  const movies = db.prepare(
-    'SELECT id FROM movies WHERE list_id = ? ORDER BY id'
-  ).all(listId);
+    const existingMovies = db.prepare(
+      'SELECT tmdb_id, media_type FROM movies WHERE list_id = ? ORDER BY id'
+    ).all(listId);
+    existingMovies.forEach(m => {
+      ensureUserMovieKeepOrAppend(visitor_id, m.tmdb_id, m.media_type);
+    });
 
-  const col = 'user' + nextSlot + '_rank';
-  const stmt = db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?');
-  movies.forEach((m, i) => {
-    stmt.run(i + 1, m.id);                                         // rank 1, 2, 3, ...
+    /* master_rank may have grown — re-project every list this visitor is on */
+    reprojectAllListsForVisitor(visitor_id);
   });
+  join();
 
   res.json({ slot: nextSlot });
 });
@@ -476,12 +1403,15 @@ app.get('/api/list/:id/check-name/:name', (req, res) => {
      media_type is 'movie' or 'tv'; defaults to 'movie' so older clients keep working.
 
    After inserting the movie:
-   1. If the visitor doesn't have a slot yet, auto-join them (next open slot).
-   2. For every occupied slot, set that slot's rank for this movie to
-      (current movie count) — the new movie starts at LAST PLACE for everyone.
-
-   This guarantees: after adding a movie, every visitor has a rank for it,
-   and no visitor has any gaps in their ranking numbers.
+   1. If the visitor doesn't have a slot yet, auto-join them (next open slot)
+      and ensure their master_rank entries exist for every pre-existing movie
+      on the list (appended at the end of their master order).
+   2. The adder gets the new movie at master_rank = 1 (everything else of
+      theirs shifts down by 1). Other visitors on the list get the new movie
+      appended to the end of their master order — UNLESS they already had a
+      master_rank for the same (tmdb_id, media_type) from another list, in
+      which case their existing position is preserved.
+   3. Re-projects userN_rank cache for every occupied slot on the list.
    ============================================================================ */
 
 app.post('/api/list/:id/movies', (req, res) => {
@@ -546,79 +1476,116 @@ app.post('/api/list/:id/movies', (req, res) => {
       .run(listId, new Date().toISOString().split('T')[0]);
   }
 
-  /* check for duplicate — same TMDB item already on this list (id+type) */
-  const existing = db.prepare(
-    'SELECT * FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
-  ).get(listId, tmdbIdNum, mediaType);
-  if (existing) return res.json(existing);
-
-  /* auto-join: if this visitor has no slot, assign one now */
-  let visitorSlot = db.prepare(
-    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
-  ).get(listId, visitor_id);
-
-  if (!visitorSlot) {
-    /* find next open slot */
-    const taken = db.prepare(
-      'SELECT slot FROM list_visitors WHERE list_id = ? ORDER BY slot'
-    ).all(listId).map(r => r.slot);
-
-    let nextSlot = null;
-    for (let s = 1; s <= 10; s++) {
-      if (!taken.includes(s)) { nextSlot = s; break; }
-    }
-    if (!nextSlot) return res.status(400).json({ error: 'list full' });
-
-    db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
-      .run(listId, nextSlot, visitor_id);
-    visitorSlot = { slot: nextSlot };
-
-    /* initialize this new visitor's ranks for all EXISTING movies */
-    const existingMovies = db.prepare(
-      'SELECT id FROM movies WHERE list_id = ? ORDER BY id'
-    ).all(listId);
-    const col = 'user' + nextSlot + '_rank';
-    const initStmt = db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?');
-    existingMovies.forEach((m, i) => {
-      initStmt.run(i + 1, m.id);
-    });
+  /* private-list access — refuse if list exists private and caller isn't owner */
+  const access = checkListAccess(listId, visitor_id);
+  if (!access.found) {
+    const existsAtAll = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
+    if (existsAtAll) return res.status(404).json({ error: 'list not found' });
   }
 
-  /* insert the new movie — note we store the VALIDATED values (tmdbIdNum,
-     validYear, validPoster), not the raw request body fields. */
-  const result = db.prepare(
-    'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(listId, tmdbIdNum, mediaType, title, validYear, validPoster, visitor_id);
-  const newMovieId = result.lastInsertRowid;
+  /* check for duplicate — same TMDB item already on this list (id+type).
+     A NULL tmdbIdNum can't collide because SQL NULL never equals NULL. */
+  if (tmdbIdNum != null) {
+    const existing = db.prepare(
+      'SELECT * FROM movies WHERE list_id = ? AND tmdb_id = ? AND media_type = ?'
+    ).get(listId, tmdbIdNum, mediaType);
+    if (existing) return res.json(existing);
+  }
 
-  /* count total movies now (including the one we just added) — this is the
-     new movie's rank (last place) for everyone */
-  const movieCount = db.prepare(
-    'SELECT COUNT(*) as n FROM movies WHERE list_id = ?'
-  ).get(listId).n;
-
-  /* set every occupied slot's rank for this new movie to last place,
-     EXCEPT the adder gets it at #1 (bump all their other movies down) */
-  const slots = db.prepare(
-    'SELECT slot FROM list_visitors WHERE list_id = ?'
-  ).all(listId);
-
-  slots.forEach(s => {
-    const col = 'user' + s.slot + '_rank';
-    if (s.slot === visitorSlot.slot) {
-      /* adder: bump all existing movies down by 1, then set new movie to rank 1 */
-      db.prepare(
-        'UPDATE movies SET ' + col + ' = ' + col + ' + 1 WHERE list_id = ? AND id != ?'
-      ).run(listId, newMovieId);
-      db.prepare('UPDATE movies SET ' + col + ' = 1 WHERE id = ?').run(newMovieId);
-    } else {
-      /* everyone else: new movie goes to last place */
-      db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?')
-        .run(movieCount, newMovieId);
+  /* Solo guard: if this list IS the visitor's solo list, refuse the add when
+     the movie is already on any of their non-solo lists. Same shape as
+     /solo-add — the search-bar Solo-tab path lands here, so the rule must
+     apply identically. */
+  if (tmdbIdNum != null) {
+    const lstRow = db.prepare(
+      'SELECT private, owner_visitor_id FROM lists WHERE id = ?'
+    ).get(listId);
+    const isOwnSolo =
+      lstRow && lstRow.private === 1 && lstRow.owner_visitor_id === visitor_id;
+    if (isOwnSolo) {
+      const elsewhere = findVisitorMovieOnAnotherList(
+        visitor_id, tmdbIdNum, mediaType, listId
+      );
+      if (elsewhere) {
+        return res.json({
+          skipped: true,
+          reason: 'already-on-another-list',
+          title: title || '',
+          list_id: elsewhere.list_id,
+          list_name: elsewhere.list_name || null
+        });
+      }
     }
+  }
+
+  /* All the writes below run inside a single transaction so an error mid-way
+     leaves the DB in its prior state. */
+  const addTx = db.transaction(() => {
+    let slot = db.prepare(
+      'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+    ).get(listId, visitor_id);
+
+    if (!slot) {
+      const taken = db.prepare(
+        'SELECT slot FROM list_visitors WHERE list_id = ? ORDER BY slot'
+      ).all(listId).map(r => r.slot);
+      let nextSlot = null;
+      for (let s = 1; s <= 10; s++) {
+        if (!taken.includes(s)) { nextSlot = s; break; }
+      }
+      if (!nextSlot) throw new Error('list full');
+
+      db.prepare('INSERT INTO list_visitors (list_id, slot, visitor_id) VALUES (?, ?, ?)')
+        .run(listId, nextSlot, visitor_id);
+      slot = { slot: nextSlot };
+
+      /* new joiner: ensure master_rank entries for every pre-existing movie */
+      const existingMovies = db.prepare(
+        'SELECT tmdb_id, media_type FROM movies WHERE list_id = ? ORDER BY id'
+      ).all(listId);
+      existingMovies.forEach(m => {
+        ensureUserMovieKeepOrAppend(visitor_id, m.tmdb_id, m.media_type);
+      });
+    }
+
+    const result = db.prepare(
+      'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(listId, tmdbIdNum, mediaType, title, validYear, validPoster, visitor_id);
+    const newMovieId = result.lastInsertRowid;
+
+    /* update master_rank for every occupied slot on this list:
+       adder → master_rank 1 (bump everything else down)
+       others → keep existing master_rank, or append at end if absent */
+    const slots = db.prepare(
+      'SELECT slot, visitor_id FROM list_visitors WHERE list_id = ?'
+    ).all(listId);
+    slots.forEach(s => {
+      const v = db.prepare('SELECT id FROM visitors WHERE id = ?').get(s.visitor_id);
+      if (!v) return;                                                // orphan slot, skip
+      if (s.visitor_id === visitor_id) {
+        ensureUserMovieAtTop(s.visitor_id, tmdbIdNum, mediaType);
+      } else {
+        ensureUserMovieKeepOrAppend(s.visitor_id, tmdbIdNum, mediaType);
+      }
+    });
+
+    /* re-project: master_rank changed for every visitor on this list, and
+       those changes propagate to all OTHER lists those visitors are on too */
+    slots.forEach(s => {
+      reprojectAllListsForVisitor(s.visitor_id);
+    });
+
+    return newMovieId;
   });
 
-  /* return the full new movie row */
+  let newMovieId;
+  try {
+    newMovieId = addTx();
+  } catch (e) {
+    if (e.message === 'list full') return res.status(400).json({ error: 'list full' });
+    throw e;
+  }
+
   const newMovie = db.prepare('SELECT * FROM movies WHERE id = ?').get(newMovieId);
   res.json(newMovie);
 });
@@ -629,9 +1596,12 @@ app.post('/api/list/:id/movies', (req, res) => {
    ============================================================================
    Removes a movie from the list. Only the person who added it can remove it.
 
-   After deleting, re-compacts ranks: for every occupied slot, any movie
-   whose rank was GREATER than the deleted movie's rank gets decremented
-   by 1. This keeps ranks contiguous (1, 2, 3... with no gaps).
+   After deletion:
+   - If the same (tmdb_id, media_type) is still present on some other list,
+     master_rank entries stay (the key still belongs in the visitor's shelf).
+   - If this was the last copy anywhere in the DB, every visitor's
+     user_movies row for it is dropped and their master_rank is re-compacted.
+   - userN_rank cache is re-projected for every occupied slot on this list.
    ============================================================================ */
 
 app.delete('/api/list/:id/movies/:movieId', (req, res) => {
@@ -639,31 +1609,31 @@ app.delete('/api/list/:id/movies/:movieId', (req, res) => {
   const movieId = parseInt(req.params.movieId);
   const { visitor_id } = req.body;
 
-  /* verify ownership */
+  const access = checkListAccess(listId, visitor_id);
+  if (!access.found) return res.status(404).json({ error: 'list not found' });
+
   const movie = db.prepare('SELECT * FROM movies WHERE id = ? AND list_id = ?')
     .get(movieId, listId);
   if (!movie) return res.status(404).json({ error: 'movie not found' });
   if (movie.added_by !== visitor_id) return res.status(403).json({ error: 'not your movie' });
 
-  /* for each occupied slot, find the deleted movie's rank and re-compact */
-  const slots = db.prepare(
-    'SELECT slot FROM list_visitors WHERE list_id = ?'
-  ).all(listId);
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM movies WHERE id = ?').run(movieId);
+    const orphaned = cleanupOrphanedKey(movie.tmdb_id, movie.media_type);
 
-  slots.forEach(s => {
-    const col = 'user' + s.slot + '_rank';
-    const deletedRank = movie[col];                                // what rank did this movie have?
-    if (deletedRank != null) {
-      /* decrement all ranks that were below (higher number = lower rank) */
-      db.prepare(
-        'UPDATE movies SET ' + col + ' = ' + col + ' - 1 '
-        + 'WHERE list_id = ? AND ' + col + ' > ?'
-      ).run(listId, deletedRank);
+    if (orphaned) {
+      /* every visitor who had this key needs every one of their lists
+         re-projected, since their master_rank changed */
+      const allVisitors = db.prepare(
+        'SELECT DISTINCT visitor_id FROM list_visitors'
+      ).all().map(r => r.visitor_id);
+      allVisitors.forEach(v => reprojectAllListsForVisitor(v));
+    } else {
+      /* key still exists somewhere — only this list's cache changed */
+      reprojectListForAllVisitors(listId);
     }
   });
-
-  /* now delete the movie row */
-  db.prepare('DELETE FROM movies WHERE id = ?').run(movieId);
+  tx();
 
   res.json({ ok: true });
 });
@@ -675,59 +1645,56 @@ app.delete('/api/list/:id/movies/:movieId', (req, res) => {
    Moves a movie up or down by one position in a visitor's ranking.
 
    Body: { slot, movieId, direction: "up" | "down" }
+     "up"   — list-rank gets SMALLER (closer to #1)
+     "down" — list-rank gets BIGGER  (further from #1)
 
-   "up" means rank gets SMALLER (closer to #1).
-   "down" means rank gets BIGGER (further from #1).
-
-   Finds the movie at the target rank and swaps the two. Two UPDATEs.
-   This replaces the old drag-and-drop system entirely.
+   Implementation: read the current list order (by userN_rank cache), swap
+   the dragged movie with its visible neighbor, then call setListProjection
+   which permutes the master_rank slots and re-projects the cache. End state:
+   master_rank stays contiguous, userN_rank cache reflects the new order.
    ============================================================================ */
+
+function readSlotOwner (listId, slotNum) {
+  return db.prepare(
+    'SELECT visitor_id FROM list_visitors WHERE list_id = ? AND slot = ?'
+  ).get(listId, slotNum);
+}
+
+function readListOrder (listId, slotNum) {
+  const col = 'user' + slotNum + '_rank';
+  return db.prepare(
+    'SELECT id FROM movies WHERE list_id = ? '
+    + 'ORDER BY ' + col + ' IS NULL, ' + col + ', id'
+  ).all(listId).map(r => r.id);
+}
 
 app.put('/api/list/:id/swap', (req, res) => {
   const listId = req.params.id;
   const { slot, movieId, direction } = req.body;
 
-  /* SECURITY: `slot` is concatenated into the SQL column name on the next
-     line — `'user' + slot + '_rank'`. Every other endpoint that builds
-     this column reads `slot` from the list_visitors table (where it's
-     constrained to 1..10 by a CHECK), but /swap and /move take it
-     directly from the request body. Without this guard, a payload like
-     `1_rank = 0, list_id = 'other' --` produces a syntactically valid
-     UPDATE that re-parents movie rows. better-sqlite3 blocks
-     multi-statement strings, so DROP TABLE etc. is impossible, but
-     re-parenting / clobbering columns is not. Restricting to a literal
-     integer 1..10 closes the surface entirely. */
   const slotNum = Number(slot);
   if (!Number.isInteger(slotNum) || slotNum < 1 || slotNum > 10) {
     return res.status(400).json({ error: 'invalid slot' });
   }
 
-  const col = 'user' + slotNum + '_rank';
+  const owner = readSlotOwner(listId, slotNum);
+  if (!owner) return res.status(400).json({ error: 'slot not assigned' });
 
-  /* get the current rank of the movie being moved */
-  const movie = db.prepare('SELECT id, ' + col + ' as rank FROM movies WHERE id = ? AND list_id = ?')
-    .get(movieId, listId);
-  if (!movie) return res.status(404).json({ error: 'movie not found' });
+  const order = readListOrder(listId, slotNum);
+  const idx = order.indexOf(parseInt(movieId));
+  if (idx < 0) return res.status(404).json({ error: 'movie not on this list' });
 
-  /* calculate the target rank */
-  const targetRank = direction === 'up' ? movie.rank - 1 : movie.rank + 1;
+  const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+  if (targetIdx < 0 || targetIdx >= order.length) return res.json({ ok: true });
 
-  /* bounds check: can't go above 1 or below movie count */
-  const movieCount = db.prepare('SELECT COUNT(*) as n FROM movies WHERE list_id = ?').get(listId).n;
-  if (targetRank < 1 || targetRank > movieCount) {
-    return res.json({ ok: true });                                 // no-op, already at the edge
-  }
+  /* swap the two array elements */
+  [order[idx], order[targetIdx]] = [order[targetIdx], order[idx]];
 
-  /* find the movie currently at the target rank */
-  const other = db.prepare(
-    'SELECT id FROM movies WHERE list_id = ? AND ' + col + ' = ?'
-  ).get(listId, targetRank);
-
-  if (!other) return res.json({ ok: true });                       // shouldn't happen, but safe
-
-  /* swap: give our movie the target rank, give the other movie our old rank */
-  db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(targetRank, movieId);
-  db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(movie.rank, other.id);
+  const tx = db.transaction(() => {
+    setListProjection(owner.visitor_id, listId, order);
+    reprojectAllListsForVisitor(owner.visitor_id);
+  });
+  tx();
 
   res.json({ ok: true });
 });
@@ -736,50 +1703,37 @@ app.put('/api/list/:id/swap', (req, res) => {
 /* ============================================================================
    SECTION 10b: MOVE TO TOP/BOTTOM — PUT /api/list/:id/move
    ============================================================================
-   Moves a movie to rank 1 (top) or last place (bottom) in a visitor's ranking.
-
+   Moves a movie to list-rank 1 (top) or last place (bottom) for one visitor.
    Body: { slot, movieId, direction: "top" | "bottom" }
-
-   Shifts all movies in between to fill the gap and make room.
    ============================================================================ */
 
 app.put('/api/list/:id/move', (req, res) => {
   const listId = req.params.id;
   const { slot, movieId, direction } = req.body;
 
-  /* SECURITY: same column-name injection risk as /swap above — `slot` is
-     concatenated into the SQL column name. Restrict to integer 1..10. */
   const slotNum = Number(slot);
   if (!Number.isInteger(slotNum) || slotNum < 1 || slotNum > 10) {
     return res.status(400).json({ error: 'invalid slot' });
   }
 
-  const col = 'user' + slotNum + '_rank';
+  const owner = readSlotOwner(listId, slotNum);
+  if (!owner) return res.status(400).json({ error: 'slot not assigned' });
 
-  /* get the current rank of the movie being moved */
-  const movie = db.prepare('SELECT id, ' + col + ' as rank FROM movies WHERE id = ? AND list_id = ?')
-    .get(movieId, listId);
-  if (!movie) return res.status(404).json({ error: 'movie not found' });
+  const order = readListOrder(listId, slotNum);
+  const mid = parseInt(movieId);
+  const idx = order.indexOf(mid);
+  if (idx < 0) return res.status(404).json({ error: 'movie not on this list' });
 
-  const movieCount = db.prepare('SELECT COUNT(*) as n FROM movies WHERE list_id = ?').get(listId).n;
-  const targetRank = (direction === 'top') ? 1 : movieCount;
+  /* pull out and re-insert at the right end */
+  order.splice(idx, 1);
+  if (direction === 'top') order.unshift(mid);
+  else order.push(mid);
 
-  if (movie.rank === targetRank) return res.json({ ok: true });       // already there
-
-  if (direction === 'top') {
-    /* shift everything above (rank < current) down by 1 to make room at rank 1 */
-    db.prepare(
-      'UPDATE movies SET ' + col + ' = ' + col + ' + 1 WHERE list_id = ? AND ' + col + ' < ? AND id != ?'
-    ).run(listId, movie.rank, movieId);
-  } else {
-    /* shift everything below (rank > current) up by 1 to fill the gap */
-    db.prepare(
-      'UPDATE movies SET ' + col + ' = ' + col + ' - 1 WHERE list_id = ? AND ' + col + ' > ? AND id != ?'
-    ).run(listId, movie.rank, movieId);
-  }
-
-  /* set the movie to its new rank */
-  db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ?').run(targetRank, movieId);
+  const tx = db.transaction(() => {
+    setListProjection(owner.visitor_id, listId, order);
+    reprojectAllListsForVisitor(owner.visitor_id);
+  });
+  tx();
 
   res.json({ ok: true });
 });
@@ -788,13 +1742,9 @@ app.put('/api/list/:id/move', (req, res) => {
 /* ============================================================================
    SECTION 10c: BULK RANK RESET — PUT /api/list/:id/my-ranks
    ============================================================================
-   Resets the caller's personal ranking to match a given movie order. Used
-   by the Details paste flow to apply the order of movies in the textarea
-   to the current user's column. Movies present on the list but not in the
-   supplied order are pushed past the ordered ones, keeping their current
-   relative order. Ranks end up contiguous 1..N.
-
-   Body: { visitor_id, ordered_movie_ids: [int, ...] }
+   Sets one visitor's full list ordering at once. Body: { visitor_id,
+   ordered_movie_ids: [int, ...] }. Movies on the list but absent from the
+   array get appended (preserving current relative order).
    ============================================================================ */
 
 app.put('/api/list/:id/my-ranks', (req, res) => {
@@ -806,26 +1756,11 @@ app.put('/api/list/:id/my-ranks', (req, res) => {
   ).get(listId, visitor_id);
   if (!slotRow) return res.status(400).json({ error: 'visitor not on this list' });
 
-  const col = 'user' + slotRow.slot + '_rank';
-
-  const allMovies = db.prepare(
-    'SELECT id, ' + col + ' as rank FROM movies WHERE list_id = ?'
-  ).all(listId);
-
-  const orderedSet = new Set(ordered_movie_ids);
-  const tail = allMovies
-    .filter(m => !orderedSet.has(m.id))
-    .sort((a, b) => {
-      if (a.rank == null && b.rank == null) return 0;
-      if (a.rank == null) return 1;
-      if (b.rank == null) return -1;
-      return a.rank - b.rank;
-    });
-
-  const update = db.prepare('UPDATE movies SET ' + col + ' = ? WHERE id = ? AND list_id = ?');
-  let rank = 1;
-  ordered_movie_ids.forEach(mid => { update.run(rank++, mid, listId); });
-  tail.forEach(m => { update.run(rank++, m.id, listId); });
+  const tx = db.transaction(() => {
+    setListProjection(visitor_id, listId, ordered_movie_ids);
+    reprojectAllListsForVisitor(visitor_id);
+  });
+  tx();
 
   res.json({ ok: true });
 });
@@ -855,6 +1790,123 @@ app.put('/api/list/:id/ready', (req, res) => {
   ).run(ready ? 1 : 0, listId, visitor_id);
 
   res.json({ ok: true });
+});
+
+
+/* ============================================================================
+   SECTION 10f: REMOVE VISITOR FROM LIST — DELETE /api/list/:id/visitors/:vid
+   ============================================================================
+   Frees a visitor's slot on a list. Guard: the visitor must have added
+   zero movies to this list. Used by the red-✕ count-badge on a user tab in
+   list mode. The visitors table row is global identity and is NOT touched —
+   only this list_visitors mapping plus the userN_rank/userN_comment columns
+   on every movie of this list (so the freed slot is clean for the next
+   joiner). Anyone with the list URL can call this; the 0-movies guard is
+   what keeps it from being destructive, and the same trust model already
+   applies elsewhere in the API.
+   ============================================================================ */
+
+app.delete('/api/list/:id/visitors/:vid', (req, res) => {
+  const listId = req.params.id;
+  const targetId = req.params.vid;
+
+  const slotRow = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+  ).get(listId, targetId);
+  if (!slotRow) return res.status(404).json({ error: 'visitor not on this list' });
+
+  const added = db.prepare(
+    'SELECT COUNT(*) AS n FROM movies WHERE list_id = ? AND added_by = ?'
+  ).get(listId, targetId).n;
+  if (added > 0) {
+    return res.status(409).json({ error: 'visitor has added movies; cannot remove' });
+  }
+
+  /* SECURITY: slotRow.slot comes from the DB and was bounded to 1..10 by
+     CHECK at insert time, so concatenating it into the column name is safe.
+     Same pattern the swap/move endpoints use after their input validation. */
+  const rankCol = 'user' + slotRow.slot + '_rank';
+  const cmtCol  = 'user' + slotRow.slot + '_comment';
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      'UPDATE movies SET ' + rankCol + ' = NULL, ' + cmtCol + ' = NULL WHERE list_id = ?'
+    ).run(listId);
+    db.prepare(
+      'DELETE FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+    ).run(listId, targetId);
+  });
+  tx();
+
+  res.json({ ok: true });
+});
+
+
+/* ============================================================================
+   SECTION 10g: DELETE EMPTY LIST — DELETE /api/list/:id
+   ============================================================================
+   Removes a list entirely IF it contains zero movies. Wipes the
+   list_visitors mappings for that list as well. Used by the red-✕ count
+   badge on a list tab in shelf mode. Same loose access model as the
+   visitor-removal endpoint above: 0-movies is the sole gate.
+   ============================================================================ */
+
+app.delete('/api/list/:id', (req, res) => {
+  const listId = req.params.id;
+
+  const list = db.prepare('SELECT id FROM lists WHERE id = ?').get(listId);
+  if (!list) return res.status(404).json({ error: 'list not found' });
+
+  const count = db.prepare(
+    'SELECT COUNT(*) AS n FROM movies WHERE list_id = ?'
+  ).get(listId).n;
+  if (count > 0) {
+    return res.status(409).json({ error: 'list still has movies; cannot delete' });
+  }
+
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM list_visitors WHERE list_id = ?').run(listId);
+    db.prepare('DELETE FROM lists WHERE id = ?').run(listId);
+  });
+  tx();
+
+  res.json({ ok: true });
+});
+
+
+/* ============================================================================
+   SECTION 10e: SET LIST NICKNAME — PUT /api/list/:id/list-name  (step 7)
+   ============================================================================
+   Per-user nickname for a list (max 12 chars). Lives in list_visitors so
+   each visitor's nickname is private — others don't see your label for the
+   list. Empty string clears the nickname.
+
+   Body: { visitor_id, list_name }
+   ============================================================================ */
+
+app.put('/api/list/:id/list-name', (req, res) => {
+  const listId = req.params.id;
+  const { visitor_id, list_name } = req.body;
+
+  /* validate */
+  if (typeof list_name !== 'string') {
+    return res.status(400).json({ error: 'list_name must be a string' });
+  }
+  const trimmed = list_name.trim();
+  if (trimmed.length > 12) {
+    return res.status(400).json({ error: 'list_name max 12 chars' });
+  }
+
+  const slotRow = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+  ).get(listId, visitor_id);
+  if (!slotRow) return res.status(400).json({ error: 'visitor not on this list' });
+
+  db.prepare(
+    'UPDATE list_visitors SET list_name = ? WHERE list_id = ? AND visitor_id = ?'
+  ).run(trimmed === '' ? null : trimmed, listId, visitor_id);
+
+  res.json({ ok: true, list_name: trimmed === '' ? null : trimmed });
 });
 
 

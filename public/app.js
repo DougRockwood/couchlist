@@ -2835,9 +2835,9 @@ function openHowToModal() {
     + '<p><span class="howto-mini howto-mini-action howto-mini-shelfbtn">Shelf</span> '
     + 'mode is your own movie list.</p>'
 
-    + '<p class="howto-newlist">No security. A user ID is just a plain-text '
-    + 'string; anyone who has it is that user. Don\'t put anything sensitive '
-    + 'here.</p>'
+    + '<p class="howto-newlist">Couchlist has no security. A user ID is just '
+    + 'a plain-text string; anyone who has it is that user. Don\'t put '
+    + 'anything sensitive here.</p>'
 
     + '<p class="howto-newlist">Your user ID is stored in a cookie. This link '
     + 'sets it without the cookie:<br>'

@@ -284,6 +284,17 @@ function threeDigits () {
   return String(Math.floor(Math.random() * 1000)).padStart(3, '0');
 }
 
+/* Stable 3-digit derivation from a list_id, used as the fallback label
+   for unnamed list-tabs (Couch#NNN). Same list always maps to the same
+   number across reloads and across users. */
+function couchNumForListId (listId) {
+  let h = 0;
+  for (let i = 0; i < listId.length; i++) {
+    h = (h * 31 + listId.charCodeAt(i)) | 0;
+  }
+  return String(Math.abs(h) % 1000).padStart(3, '0');
+}
+
 function readLocalStorage (k) {
   try { return localStorage.getItem(k); } catch (e) { return null; }
 }
@@ -3219,12 +3230,11 @@ function renderShelfTabs () {
 
   /* List tabs — solid bg per list, sticky-saved server-side as
      lists.tab_color (mixed from member colors when first seen). Unnamed
-     lists get noname1, noname2, … by chronological order among
-     unnamed-only lists. */
-  let nonameCounter = 0;
+     lists fall back to Couch#NNN, deterministically derived from the
+     list_id so the label is stable across reloads. */
   listTabs.forEach(l => {
     const hasName = !!(l.list_name && l.list_name.trim());
-    const label   = hasName ? l.list_name : 'noname' + (++nonameCounter);
+    const label   = hasName ? l.list_name : 'Couch#' + couchNumForListId(l.id);
     const isActive = activeTab === l.id;
     const ready   = l.ready;
     const tabColor = l.tab_color || '#cccccc';

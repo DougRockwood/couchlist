@@ -622,20 +622,43 @@ app.put('/api/visitor/:id', (req, res) => {
 });
 
 /* ============================================================================
-   COLOR HELPERS — used to mix a list's member colors into one solid tab
-   color. Runs server-side once per list (lazy, on first shelf read) and
-   sticks via lists.tab_color. The mix favors vibrancy over averaging
-   accuracy: hue is the circular mean (so red/red doesn't average to cyan),
-   sat/lightness are clamped into a readable band, and a small random
-   jitter keeps two lists with similar membership visually distinct.
+   COLOR HELPERS — pick a solid background color for a list's tab. Runs
+   server-side once per list (lazy, on first shelf read) and sticks via
+   lists.tab_color.
+
+   Inputs to the decision (in priority order):
+     1. ownerColor — the list creator's personal color. Treated as the
+        primary seed when known: a list "belongs" to its owner, so its
+        tab leans on the owner's hue.
+     2. memberColors — fallback seed when owner is unknown (legacy lists
+        with no owner_visitor_id). Hue is the circular mean of member
+        hues so red/red doesn't average to cyan.
+     3. existingTabColors — tab_colors of OTHER lists the same user
+        already sees. The picker sweeps the hue wheel and prefers the
+        candidate that's far from every existing tab while still
+        leaning on the seed. Without this, two lists from the same
+        member set would land on the same hue.
+
+   Sat/lightness stay in a readable band (good contrast against black
+   tab text) regardless of seed.
    ============================================================================ */
 
-function parseHexColor (hex) {
-  if (typeof hex !== 'string') return null;
-  const m = /^#([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return null;
-  const n = parseInt(m[1], 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+function parseColor (str) {
+  /* Visitor colors arrive in two shapes: '#rrggbb' from <input type=color>
+     and 'hsl(h, s%, l%)' from the random-pick helper. Accept both — the
+     old picker only took hex, which silently dropped every hsl() member
+     and skewed the seed. */
+  if (typeof str !== 'string') return null;
+  const hexM = /^#([0-9a-f]{6})$/i.exec(str);
+  if (hexM) {
+    const n = parseInt(hexM[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  const hslM = /^hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*(\d+)%\s*\)$/.exec(str);
+  if (hslM) {
+    return hslToRgb(+hslM[1], +hslM[2] / 100, +hslM[3] / 100);
+  }
+  return null;
 }
 
 function rgbToHsl (rgb) {
@@ -652,7 +675,7 @@ function rgbToHsl (rgb) {
   return [h * 60, s, l];
 }
 
-function hslToHex (h, s, l) {
+function hslToRgb (h, s, l) {
   h = ((h % 360) + 360) % 360;
   const c = (1 - Math.abs(2 * l - 1)) * s;
   const hp = h / 60;
@@ -665,28 +688,69 @@ function hslToHex (h, s, l) {
   else if (hp < 5) { r1 = x; b1 = c; }
   else             { r1 = c; b1 = x; }
   const m = l - c / 2;
-  const to255 = v => Math.round((v + m) * 255).toString(16).padStart(2, '0');
-  return '#' + to255(r1) + to255(g1) + to255(b1);
+  return [
+    Math.round((r1 + m) * 255),
+    Math.round((g1 + m) * 255),
+    Math.round((b1 + m) * 255)
+  ];
 }
 
-function pickListColor (memberColors) {
-  const hsls = (memberColors || []).map(parseHexColor).filter(Boolean).map(rgbToHsl);
-  if (hsls.length === 0) {
-    /* No members yet — give the list a random pastel so it still has identity. */
-    return hslToHex(Math.random() * 360, 0.65, 0.65);
-  }
-  const sumX = hsls.reduce((a, [h]) => a + Math.cos(h * Math.PI / 180), 0);
-  const sumY = hsls.reduce((a, [h]) => a + Math.sin(h * Math.PI / 180), 0);
-  let h = Math.atan2(sumY / hsls.length, sumX / hsls.length) * 180 / Math.PI;
-  if (h < 0) h += 360;
-  let s = hsls.reduce((a, [, sat]) => a + sat, 0) / hsls.length;
-  let l = hsls.reduce((a, [, , lt]) => a + lt, 0) / hsls.length;
+function hslToHex (h, s, l) {
+  const [r, g, b] = hslToRgb(h, s, l);
+  const to2 = v => v.toString(16).padStart(2, '0');
+  return '#' + to2(r) + to2(g) + to2(b);
+}
 
-  /* Clamp+jitter — keeps the result vibrant and readable with black text,
-     and ensures two lists with similar member colors land different spots. */
-  h = (h + (Math.random() - 0.5) * 30 + 360) % 360;
-  s = Math.min(0.85, Math.max(0.55, s + (Math.random() - 0.5) * 0.20));
-  l = Math.min(0.72, Math.max(0.55, l + (Math.random() - 0.5) * 0.10));
+function pickListColor (memberColors, existingTabColors, ownerColor) {
+  /* Step 1 — seed hue/sat/light. Owner color wins; member-mix is the
+     fallback for owner-less legacy lists; pure random when neither
+     exists. */
+  const ownerRgb = ownerColor ? parseColor(ownerColor) : null;
+  const ownerHsl = ownerRgb ? rgbToHsl(ownerRgb) : null;
+  const memberHsls = (memberColors || [])
+    .map(parseColor).filter(Boolean).map(rgbToHsl);
+
+  let seedH, seedS, seedL;
+  if (ownerHsl) {
+    [seedH, seedS, seedL] = ownerHsl;
+  } else if (memberHsls.length) {
+    const sumX = memberHsls.reduce((a, [h]) => a + Math.cos(h * Math.PI / 180), 0);
+    const sumY = memberHsls.reduce((a, [h]) => a + Math.sin(h * Math.PI / 180), 0);
+    seedH = Math.atan2(sumY, sumX) * 180 / Math.PI;
+    if (seedH < 0) seedH += 360;
+    seedS = memberHsls.reduce((a, [, sat]) => a + sat, 0) / memberHsls.length;
+    seedL = memberHsls.reduce((a, [, , lt]) => a + lt, 0) / memberHsls.length;
+  } else {
+    seedH = Math.random() * 360; seedS = 0.65; seedL = 0.65;
+  }
+
+  /* Step 2 — bias the hue away from existing tabs the same user sees.
+     Sweep the wheel; score each candidate as (distance to nearest
+     existing) minus a mild pull toward the seed. The 0.25 weight is
+     tuned so we'll travel ~120° to gain ~30° of separation, but won't
+     wander to the opposite hue just because nothing's there. */
+  const existingHues = (existingTabColors || [])
+    .map(parseColor).filter(Boolean).map(rgbToHsl).map(([h]) => h);
+  const angDist = (a, b) => Math.abs(((a - b + 540) % 360) - 180);
+
+  let h;
+  if (existingHues.length === 0) {
+    h = (seedH + (Math.random() - 0.5) * 30 + 360) % 360;
+  } else {
+    let best = seedH, bestScore = -Infinity;
+    for (let off = 0; off < 360; off += 10) {
+      const cand = (seedH + off) % 360;
+      const minToExisting = existingHues.reduce(
+        (m, eh) => Math.min(m, angDist(cand, eh)), 360);
+      const score = minToExisting - 0.25 * angDist(cand, seedH);
+      if (score > bestScore) { bestScore = score; best = cand; }
+    }
+    h = (best + (Math.random() - 0.5) * 8 + 360) % 360;
+  }
+
+  /* Step 3 — clamp sat/light into a readable band with a small jitter. */
+  const s = Math.min(0.85, Math.max(0.55, seedS + (Math.random() - 0.5) * 0.10));
+  const l = Math.min(0.72, Math.max(0.55, seedL + (Math.random() - 0.5) * 0.05));
   return hslToHex(h, s, l);
 }
 
@@ -759,12 +823,26 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
     lists.forEach(l => { l.member_colors = colorsByList.get(l.id) || []; });
 
     /* Lazy-fill lists.tab_color the first time we see a list without one.
-       Sticky after — even if members change later, the tab color stays. */
+       Sticky after — even if members change later, the tab color stays.
+
+       The picker takes the owner's color as seed and avoids the colors
+       of OTHER lists already decided for this same user. We accumulate
+       newly-picked colors into `usedTabColors` as we go so two lists
+       lazy-filled in the same request don't collide. */
     const setTabColor = db.prepare('UPDATE lists SET tab_color = ? WHERE id = ?');
+    const ownerColorOf = db.prepare('SELECT color FROM visitors WHERE id = ?');
+    const usedTabColors = lists.map(l => l.tab_color).filter(Boolean);
     lists.forEach(l => {
       if (!l.tab_color) {
-        l.tab_color = pickListColor(l.member_colors);
+        const ownerRow = l.owner_visitor_id
+          ? ownerColorOf.get(l.owner_visitor_id) : null;
+        /* For owner-less legacy lists, fall back to the requesting
+           visitor's color — they're who's looking at the shelf, so
+           leaning on their hue is the right "user color" stand-in. */
+        const seed = (ownerRow && ownerRow.color) || visitor.color || null;
+        l.tab_color = pickListColor(l.member_colors, usedTabColors, seed);
         setTabColor.run(l.tab_color, l.id);
+        usedTabColors.push(l.tab_color);
       }
     });
   }
@@ -1282,10 +1360,23 @@ app.get('/api/list/:id', (req, res) => {
 
   /* Lazy-fill lists.tab_color so the list-page Couch tab can paint its
      stacked label in the same mixed color the shelf list-tab uses. Same
-     sticky semantics as the shelf path. */
+     sticky semantics as the shelf path; same owner-seeded + avoid-existing
+     picker logic. The avoidance set here is the owner's OTHER lists'
+     tab_colors — looking at the list page never knows about other people's
+     shelves, but the owner is the right "user" to make distinct for. */
   if (!list.tab_color) {
     const memberColors = Object.values(visitors).map(v => v.color).filter(Boolean);
-    list.tab_color = pickListColor(memberColors);
+    let ownerColor = null, otherTabs = [];
+    if (list.owner_visitor_id) {
+      const ownerRow = db.prepare('SELECT color FROM visitors WHERE id = ?')
+        .get(list.owner_visitor_id);
+      ownerColor = ownerRow ? ownerRow.color : null;
+      otherTabs = db.prepare(
+        'SELECT tab_color FROM lists '
+        + 'WHERE owner_visitor_id = ? AND id != ? AND tab_color IS NOT NULL'
+      ).all(list.owner_visitor_id, listId).map(r => r.tab_color);
+    }
+    list.tab_color = pickListColor(memberColors, otherTabs, ownerColor);
     db.prepare('UPDATE lists SET tab_color = ? WHERE id = ?').run(list.tab_color, listId);
   }
 

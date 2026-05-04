@@ -1578,7 +1578,9 @@ function renderUserTabs() {
      style on the parent paints both lines. Falls back to white when the
      list is virtual / has no saved color yet. */
   const savedListName = (listData && listData.your_list_name) || '';
-  const placeholderListName = virtualListName || '';
+  const realListId = listData && listData.list && listData.list.id;
+  const placeholderListName = virtualListName
+    || (realListId ? 'Couch#' + couchNumForListId(realListId) : '');
   const couchActive = (activeTab === 'couch');
   const listTabColor = (listData && listData.list && listData.list.tab_color) || '#ffffff';
 

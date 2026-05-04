@@ -8,6 +8,11 @@
 
 set -e
 
+# Capture this clone's directory NOW, before any `cd` below — using
+# BASH_SOURCE after a cd would resolve a relative invocation against the
+# wrong directory and treat /root/.claude as the project clone.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # helper: true when HEAD is ahead of origin/<branch>
 ahead_of_origin() {
     local b="$1"
@@ -34,7 +39,6 @@ if [ -d /root/.claude ]; then
 fi
 
 # --- This couchlist clone — current branch, current path ---
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 BRANCH="$(git branch --show-current)"
 NAME="$(basename "$SCRIPT_DIR")"

@@ -1689,18 +1689,16 @@ html, body {
 
 /* List tabs in shelf mode — solid bg painted inline from lists.tab_color
    (server-side mix of member colors, sticky once chosen). Name centered
-   at bottom in black. */
-.tab-shelf-list {
-  color: #000000;
-  text-shadow: none;
-}
+   at bottom; inherits the .tab-user white-on-black-outline text so list
+   tabs read the same as visitor tabs in couchlist mode. */
 .tab-shelf-list .tab-name {
-  color: #000000;
   font-weight: 700;
 }
 .tab-shelf-list.tab-dimmed { opacity: 0.55; }
 
-/* Inline editor on an active list-tab — sits where the .tab-name span would. */
+/* Inline editor on an active list-tab — sits where the .tab-name span would.
+   Color + text-shadow inherit from .tab-user so the input matches the rest
+   of the visitor-tab text style. */
 .shelf-list-name-input {
   field-sizing: content;
   grid-column: 1 / 4;
@@ -1711,19 +1709,17 @@ html, body {
   background: transparent;
   border: none;
   outline: none;
-  color: #000000;
   font: inherit;
   font-size: 14px;
   text-align: center;
   padding: 0 4px;
-  text-shadow: none;
 }
 .shelf-list-name-input::placeholder {
-  color: rgba(0,0,0,0.55);
+  color: rgba(255,255,255,0.7);
   font-size: 12px;
 }
 .shelf-list-name-input:focus {
-  background: rgba(0,0,0,0.12);
+  background: rgba(255,255,255,0.12);
   border-radius: 4px;
 }
 

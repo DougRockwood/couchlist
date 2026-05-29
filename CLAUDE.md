@@ -31,7 +31,7 @@ This repo is intentionally minimal. The deeper context — architecture, deploy 
 - **Architecture & schema, API endpoints, Borda algorithm** → `project_architecture.md`
 - **Coding gotchas before changing code** (URL params, comment fragility, popup hover, key location) → `coding_gotchas.md`
 - **Deploy / droplet / systemd / nginx** → `project_deployment.md` (and `deploy_install_walkthrough.md` for the original phase-1 walkthrough)
-- **Branch / clone workflow (post v1.1)** → `feedback_branch_workflow.md`
+- **Branch / clone workflow (post v1.1)** → `rule_branch_workflow.md`
 - **TMDB credentials** (current key + history) → `reference_tmdb_keys.md`
 - **Bug history** → `project_bughistory.md` (summary), `archive_bugfix_log.md` (full diagnoses)
 - **Drag-to-reorder design notes** → `archive_drag_bestpractice.md`, `archive_drag_current.md`

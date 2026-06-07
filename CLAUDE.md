@@ -37,7 +37,7 @@ This repo is intentionally minimal. The deeper context — architecture, deploy 
 - **Drag-to-reorder design notes** → `archive_drag_bestpractice.md`, `archive_drag_current.md`
 - **Most recent security review** → `security_review_2026-04-25.md`; what shipped → `project_security_validations.md`
 - **Original 2026-03 design doc** (mostly stale) → `archive_outline_design_doc.md`
-- **Operation WidthPercent visual redesign** → `operation_widthpercent.md`
+- **Operation WidthPercent visual redesign** (archived, mostly stale) → `archive_widthpercent_2026-04-22.md`
 - **Visual language for cols A/B** → `project_visual_language.md`
 - **v1.0 / v1.1 release notes** → `project_v1_1_release.md`
 - **Cross-project context (other repos, Doug's profile, sync setup)** → `~/.claude/memory/MEMORY.md` index one level up

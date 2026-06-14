@@ -975,6 +975,77 @@ html, body {
 
 
 /* ============================================================================
+   ARCHIVE — Archive/Unarchive icon buttons, the gray archived section, and
+   the shelf archive-info summary.
+   ============================================================================ */
+
+/* Icon buttons that replace the old ✕. Same column slot, muted color. */
+.archive-btn, .unarchive-btn,
+.shelf-archive-btn, .shelf-unarchive-btn,
+.shelf-archive-key-btn, .shelf-unarchive-key-btn {
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  padding: 3px;
+  line-height: 0;
+  display: inline-flex;
+}
+.archive-btn:hover, .shelf-archive-btn:hover, .shelf-archive-key-btn:hover { color: #c0392b; }
+.unarchive-btn:hover, .shelf-unarchive-btn:hover, .shelf-unarchive-key-btn:hover { color: #2a9d3f; }
+
+/* Divider introducing the archived section. */
+.archive-divider {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 8px 4px;
+  color: #999;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.archive-divider::before, .archive-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #ddd;
+}
+
+/* Archived rows: light gray background, dimmed content. */
+.entry-archived { background: #f1f1f1; color: #888; }
+.entry-archived .rank-number { color: #aaa; }
+.entry-archived .entry-title-text { color: #777; }
+.entry-archived .entry-poster img { filter: grayscale(0.6); opacity: 0.85; }
+
+/* Shelf archive-info summary (note cell + note modal). */
+.shelf-archived-cell { display: flex; flex-direction: column; }
+.shelf-archive-info {
+  font-size: 11px;
+  line-height: 1.35;
+  color: #777;
+  margin-bottom: 4px;
+}
+.shelf-archive-info .ai-label { font-weight: 600; color: #555; }
+
+/* In the note modal the info sits below the textarea, set off by a rule. */
+.shelf-note-expanded .shelf-archive-info {
+  margin: 8px 0 2px;
+  padding-top: 8px;
+  border-top: 1px solid #ddd;
+}
+
+/* Mobile (portrait): drop the "by NAME" tail from the in-row summary so the
+   dates still fit; the full summary (with names) stays in the note modal. */
+@media (orientation: portrait) {
+  .shelf-archived-cell .shelf-archive-info .ai-by { display: none; }
+  /* but the modal always shows the full summary, names included */
+  .shelf-note-expanded .shelf-archive-info .ai-by { display: inline; }
+}
+
+
+/* ============================================================================
    SECTION 6: DRAG TO REORDER  (transform-the-original — no clone)
    ============================================================================
    The dragged row IS the row — we don't clone it. While dragging:

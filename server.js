@@ -204,6 +204,26 @@ try {
   db.exec('ALTER TABLE lists ADD COLUMN tab_color TEXT');
 } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
 
+/* Archive feature. A movie is never deleted — it gets archived (a shared flag
+   on the movies row; anyone on the list can toggle it, like Rdy). Archived
+   movies are excluded from rank renumbering (reprojectListForVisitor /
+   setListProjection / readListOrder all skip archived=1), so master_rank is
+   left untouched while archived and unarchiving drops the movie back to its
+   old position naturally. added_at lets the shelf show "added when"; legacy
+   rows have NULL added_at (shown as "—"). */
+try {
+  db.exec('ALTER TABLE movies ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+try {
+  db.exec('ALTER TABLE movies ADD COLUMN archived_at TEXT');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+try {
+  db.exec('ALTER TABLE movies ADD COLUMN archived_by TEXT');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+try {
+  db.exec('ALTER TABLE movies ADD COLUMN added_at TEXT');
+} catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
 
 /* Bootstrap user_movies from existing per-list rankings.
 
@@ -403,11 +423,14 @@ function cleanupOrphanedKey (tmdb_id, media_type) {
    slot on this list. */
 function reprojectListForVisitor (visitor_id, list_id, slot) {
   const col = 'user' + slot + '_rank';
+  /* Archived movies are skipped: they keep their frozen userN_rank (the "last
+     rank" the shelf/couch shows in gray) and are not counted in the active
+     1..N numbering, so removing one auto-closes the gap. */
   const ordered = db.prepare(
     'SELECT m.id FROM movies m '
     + 'LEFT JOIN user_movies um '
     + '  ON um.visitor_id = ? AND um.tmdb_id = m.tmdb_id AND um.media_type = m.media_type '
-    + 'WHERE m.list_id = ? '
+    + 'WHERE m.list_id = ? AND m.archived = 0 '
     + 'ORDER BY (um.master_rank IS NULL), um.master_rank, m.id'
   ).all(visitor_id, list_id);
 
@@ -466,12 +489,15 @@ function setMasterProjectionByKeys (visitor_id, ordered_keys) {
    movies on the list but absent from this array get appended (preserving
    their current relative master_rank order).  */
 function setListProjection (visitor_id, list_id, ordered_movie_ids) {
+  /* Archived movies are excluded so reordering active movies never disturbs an
+     archived movie's master_rank — that's what lets unarchive restore it to
+     its old spot. */
   const allOnList = db.prepare(
     'SELECT m.id, m.tmdb_id, m.media_type, um.master_rank '
     + 'FROM movies m '
     + 'LEFT JOIN user_movies um '
     + '  ON um.visitor_id = ? AND um.tmdb_id = m.tmdb_id AND um.media_type = m.media_type '
-    + 'WHERE m.list_id = ?'
+    + 'WHERE m.list_id = ? AND m.archived = 0'
   ).all(visitor_id, list_id);
 
   /* skip movies with no tmdb_id (they can't be in user_movies) */
@@ -852,7 +878,8 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
   const rawRows = db.prepare(`
     SELECT
       m.tmdb_id, m.media_type, m.title, m.year, m.poster,
-      m.id AS movie_id, m.list_id, m.added_by,
+      m.id AS movie_id, m.list_id, m.added_by, m.added_at,
+      m.archived, m.archived_at, m.archived_by,
       um.master_rank, um.note
     FROM movies m
     JOIN user_movies um
@@ -876,7 +903,13 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
         master_rank: r.master_rank,
         note: r.note || '',
         added_by_me: false,
-        list_entries: []
+        list_entries: [],
+        /* archive summary, aggregated across the key's list rows below */
+        archived: true,                                  // AND of all entries
+        added_at: r.added_at || null,                    // earliest add
+        added_by: r.added_by || null,
+        archived_at: null,                               // latest archive
+        archived_by: null
       };
       byKey.set(k, group);
     }
@@ -884,13 +917,36 @@ app.get('/api/visitor/:id/shelf', (req, res) => {
     group.list_entries.push({
       list_id: r.list_id,
       movie_id: r.movie_id,
-      added_here: addedHere
+      added_here: addedHere,
+      archived: r.archived === 1
     });
     if (addedHere) group.added_by_me = true;
+    /* a key is "archived" on the shelf only when every one of its rows is */
+    if (r.archived !== 1) group.archived = false;
+    /* earliest add wins for the "added" line */
+    if (r.added_at && (!group.added_at || r.added_at < group.added_at)) {
+      group.added_at = r.added_at; group.added_by = r.added_by;
+    }
+    /* latest archive wins for the "archived" line */
+    if (r.archived === 1 && r.archived_at
+        && (!group.archived_at || r.archived_at > group.archived_at)) {
+      group.archived_at = r.archived_at; group.archived_by = r.archived_by;
+    }
   }
   /* sorted by master_rank because the source query was sorted that way and
      Map preserves insertion order */
   const movies = Array.from(byKey.values());
+
+  /* resolve visitor ids on the archive summary to display names */
+  const nameOf = id => {
+    if (!id) return null;
+    const row = db.prepare('SELECT name FROM visitors WHERE id = ?').get(id);
+    return row ? row.name : null;
+  };
+  movies.forEach(g => {
+    g.added_by_name = nameOf(g.added_by);
+    g.archived_by_name = nameOf(g.archived_by);
+  });
 
   res.json({ visitor, lists, movies });
 });
@@ -1640,8 +1696,8 @@ app.post('/api/list/:id/movies', (req, res) => {
     }
 
     const result = db.prepare(
-      'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(listId, tmdbIdNum, mediaType, title, validYear, validPoster, visitor_id);
+      'INSERT INTO movies (list_id, tmdb_id, media_type, title, year, poster, added_by, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(listId, tmdbIdNum, mediaType, title, validYear, validPoster, visitor_id, new Date().toISOString());
     const newMovieId = result.lastInsertRowid;
 
     /* update master_rank for every occupied slot on this list:
@@ -1754,7 +1810,7 @@ function readSlotOwner (listId, slotNum) {
 function readListOrder (listId, slotNum) {
   const col = 'user' + slotNum + '_rank';
   return db.prepare(
-    'SELECT id FROM movies WHERE list_id = ? '
+    'SELECT id FROM movies WHERE list_id = ? AND archived = 0 '
     + 'ORDER BY ' + col + ' IS NULL, ' + col + ', id'
   ).all(listId).map(r => r.id);
 }
@@ -1879,6 +1935,89 @@ app.put('/api/list/:id/ready', (req, res) => {
   db.prepare(
     'UPDATE list_visitors SET ready = ? WHERE list_id = ? AND visitor_id = ?'
   ).run(ready ? 1 : 0, listId, visitor_id);
+
+  res.json({ ok: true });
+});
+
+
+/* ============================================================================
+   ARCHIVE — PUT /api/list/:id/archive  (couch list)
+            PUT /api/visitor/:id/archive (shelf, by movie key)
+   ============================================================================
+   Archive replaces delete. A movie is never removed; archived is a shared flag
+   on the movies row. Free-for-all like Rdy: anyone on the list may toggle it.
+   Archived movies drop out of the active 1..N numbering (reproject/reorder all
+   skip archived=1), but their master_rank is left untouched, so unarchiving
+   drops them back to their old position. archived_at/by are stamped for the
+   shelf's archive summary; cleared on unarchive.
+   ============================================================================ */
+
+app.put('/api/list/:id/archive', (req, res) => {
+  const listId = req.params.id;
+  const { visitor_id, movie_id, archived } = req.body;
+
+  const slotRow = db.prepare(
+    'SELECT slot FROM list_visitors WHERE list_id = ? AND visitor_id = ?'
+  ).get(listId, visitor_id);
+  if (!slotRow) return res.status(400).json({ error: 'visitor not on this list' });
+
+  const movie = db.prepare(
+    'SELECT id FROM movies WHERE id = ? AND list_id = ?'
+  ).get(movie_id, listId);
+  if (!movie) return res.status(404).json({ error: 'movie not on this list' });
+
+  const tx = db.transaction(() => {
+    if (archived) {
+      db.prepare(
+        'UPDATE movies SET archived = 1, archived_at = ?, archived_by = ? WHERE id = ?'
+      ).run(new Date().toISOString(), visitor_id, movie_id);
+    } else {
+      db.prepare(
+        'UPDATE movies SET archived = 0, archived_at = NULL, archived_by = NULL WHERE id = ?'
+      ).run(movie_id);
+    }
+    /* renumber the active list for every member (archive closes the gap;
+       unarchive re-inserts by the movie's preserved master_rank) */
+    reprojectListForAllVisitors(listId);
+  });
+  tx();
+
+  res.json({ ok: true });
+});
+
+app.put('/api/visitor/:id/archive', (req, res) => {
+  const vid = req.params.id;
+  const { tmdb_id, media_type, archived } = req.body;
+
+  const visitor = db.prepare('SELECT id FROM visitors WHERE id = ?').get(vid);
+  if (!visitor) return res.status(404).json({ error: 'visitor not found' });
+
+  /* every movie row for this key, on any list this visitor is a member of */
+  const rows = db.prepare(
+    'SELECT m.id, m.list_id FROM movies m '
+    + 'JOIN list_visitors lv ON lv.list_id = m.list_id AND lv.visitor_id = ? '
+    + 'WHERE m.tmdb_id = ? AND m.media_type = ?'
+  ).all(vid, tmdb_id, media_type);
+  if (rows.length === 0) return res.status(404).json({ error: 'no matching movie' });
+
+  const tx = db.transaction(() => {
+    const stamp = new Date().toISOString();
+    rows.forEach(r => {
+      if (archived) {
+        db.prepare(
+          'UPDATE movies SET archived = 1, archived_at = ?, archived_by = ? WHERE id = ?'
+        ).run(stamp, vid, r.id);
+      } else {
+        db.prepare(
+          'UPDATE movies SET archived = 0, archived_at = NULL, archived_by = NULL WHERE id = ?'
+        ).run(r.id);
+      }
+    });
+    /* renumber every affected list for all its members */
+    const lists = [...new Set(rows.map(r => r.list_id))];
+    lists.forEach(lid => reprojectListForAllVisitors(lid));
+  });
+  tx();
 
   res.json({ ok: true });
 });

@@ -809,9 +809,26 @@ async function addMovie(tmdbMovie) {
    tab-dependent visual language — see the comment at the top of renderEntry.
    ============================================================================ */
 
+/* Inline SVG icons for the archive / unarchive buttons (replace the old ✕).
+   Crisp at any DPI and font-independent, unlike an emoji. */
+const ARCHIVE_ICON =
+  '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" '
+  + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<rect x="3" y="4" width="18" height="4" rx="1"/>'
+  + '<path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/>'
+  + '<path d="M10 12h4"/></svg>';
+const UNARCHIVE_ICON =
+  '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" '
+  + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<rect x="3" y="4" width="18" height="4" rx="1"/>'
+  + '<path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/>'
+  + '<path d="M12 18v-6"/><path d="M9.5 14.5l2.5-2.5 2.5 2.5"/></svg>';
+
 function renderList() {
   const container = document.getElementById('movie-list');
-  const movies = listData.movies.slice();                          // copy so we can sort
+  const allMovies = listData.movies.slice();
+  const movies   = allMovies.filter(m => !m.archived);              // active, sortable
+  const archived = allMovies.filter(m =>  m.archived);             // shown gray below
 
   /* build lookup: visitor id → slot number */
   const slotByVisitorId = {};
@@ -917,14 +934,58 @@ function renderList() {
   movies.forEach((movie, index) => {
     const position = index + 1;
     const tieLabel = isCouchTab ? (couchTies[movie.id] || null) : null;
-    const entry = renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab);
+    const entry = renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab, false);
     container.appendChild(entry);
   });
+
+  /* --- ARCHIVED SECTION --- gray rows below the worst active rank. Each shows
+     its "last rank" for the active tab (frozen userN_rank; on the Couch tab a
+     Borda position computed over the full set), comments intact, and an
+     Unarchive button. */
+  if (archived.length) {
+    /* last-rank lookup for the Couch tab: Borda over active+archived */
+    const fullPos = {};
+    if (isCouchTab) {
+      const slots = [];
+      Object.entries(listData.visitors).forEach(([slot, v]) => {
+        if (selectedVisitors[v.id] !== false) slots.push(parseInt(slot));
+      });
+      if (slots.length) {
+        const all = allMovies.slice();
+        all.forEach(m => {
+          m._fs = 0;
+          slots.forEach(s => {
+            const r = m['user' + s + '_rank'];
+            m._fs += (r != null) ? r : (all.length + 1);
+          });
+        });
+        all.sort((a, b) => (a._fs - b._fs) || (a.id - b.id));
+        all.forEach((m, i) => { fullPos[m.id] = i + 1; });
+      }
+    }
+    const archRank = movie => {
+      if (isCouchTab) return fullPos[movie.id] || null;
+      if (viewSlot)   return movie['user' + viewSlot + '_rank'] || null;
+      return null;
+    };
+    archived.sort((a, b) => (archRank(a) || 9999) - (archRank(b) || 9999));
+
+    const divider = document.createElement('div');
+    divider.className = 'archive-divider';
+    divider.innerHTML = '<span>Archived</span>';
+    container.appendChild(divider);
+
+    archived.forEach(movie => {
+      const entry = renderEntry(movie, archRank(movie), null, visitorById,
+                                isMyTab, isCouchTab, true);
+      container.appendChild(entry);
+    });
+  }
 }
 
-function renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab) {
+function renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab, isArchived) {
   const entry = document.createElement('div');
-  entry.className = 'entry';
+  entry.className = 'entry' + (isArchived ? ' entry-archived' : '');
   entry.dataset.movieId = movie.id;
 
   /* VISUAL LANGUAGE FOR THE TWO LEFT-MOST CELLS (cols A and B):
@@ -944,10 +1005,12 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab
      cell is always emitted so col F's width never shifts between tabs. */
 
   let leftHtml, rightHtml;
+  /* archived rows show the frozen "last rank"; null → en-dash */
+  const posStr = (position != null) ? String(position) : '–';
 
   if (isCouchTab) {
     /* Couch: one centered rank that spans cols 1-2. Tied → range string. */
-    const labelText = tieLabel || String(position);
+    const labelText = tieLabel || posStr;
     leftHtml = '<div class="entry-rank entry-rank-couch">'
       + '<span class="rank-number">' + escapeHtml(labelText) + '</span>'
       + '</div>';
@@ -955,11 +1018,11 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab
   } else if (isMyTab) {
     /* Your tab: your rank in A, drag handle in B. The handle gets
        `touch-action:none` so finger drags start a drag instead of
-       scrolling the page. */
+       scrolling the page. Archived rows can't be reordered — no handle. */
     leftHtml = '<div class="entry-rank">'
-      + '<span class="rank-number">' + position + '</span>'
+      + '<span class="rank-number">' + escapeHtml(posStr) + '</span>'
       + '</div>';
-    rightHtml = mySlot
+    rightHtml = (mySlot && !isArchived)
       ? '<div class="entry-grab">'
           + '<div class="grab-handle" data-movie-id="' + movie.id + '" aria-label="Drag to reorder">'
           + '<span class="grab-icon">&#9776;</span>'        /* ☰ three-bars icon */
@@ -976,7 +1039,7 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab
       + (myRankStr ? '<span class="rank-number">' + escapeHtml(myRankStr) + '</span>' : '')
       + '</div>';
     rightHtml = '<div class="entry-rank entry-rank-other">'
-      + '<span class="rank-number">' + position + '</span>'
+      + '<span class="rank-number">' + escapeHtml(posStr) + '</span>'
       + '</div>';
   }
 
@@ -1036,12 +1099,15 @@ function renderEntry(movie, position, tieLabel, visitorById, isMyTab, isCouchTab
 
   commentsHtml += '</div>';
 
-  /* 6. REMOVE CELL — wrapper is always emitted so column F's width never
-     shifts; the X button lives inside only when this is your movie. */
+  /* 6. ARCHIVE CELL — replaces the old remove ✕. Free-for-all like Rdy: anyone
+     can archive or unarchive any movie. Active rows get an Archive button;
+     archived rows get Unarchive. */
   const removeHtml = '<div class="entry-remove">'
-    + (movie.added_by === visitorId
-        ? '<button class="remove-btn" data-movie-id="' + movie.id + '">✕</button>'
-        : '')
+    + (isArchived
+        ? '<button class="unarchive-btn" data-movie-id="' + movie.id
+            + '" aria-label="Unarchive" title="Unarchive">' + UNARCHIVE_ICON + '</button>'
+        : '<button class="archive-btn" data-movie-id="' + movie.id
+            + '" aria-label="Archive" title="Archive">' + ARCHIVE_ICON + '</button>')
     + '</div>';
 
   entry.innerHTML = leftHtml + rightHtml + posterHtml + titleHtml + commentsHtml + removeHtml;
@@ -2520,13 +2586,14 @@ async function applyPasteText(text) {
    SECTION 13: REMOVE MOVIE
    ============================================================================ */
 
-async function removeMovie(movieId) {
-  await fetch(API + '/list/' + listId + '/movies/' + movieId, {
-    method: 'DELETE',
+/* Archive / unarchive a movie on the couch list (free-for-all). The movie is
+   never deleted — archived movies move to the gray section below the list. */
+async function archiveMovie(movieId, archived) {
+  await fetch(API + '/list/' + listId + '/archive', {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ visitor_id: visitorId })
+    body: JSON.stringify({ visitor_id: visitorId, movie_id: movieId, archived: archived })
   });
-
   await loadList();
 }
 
@@ -2765,10 +2832,15 @@ function setupEventListeners() {
       return;
     }
 
-    /* REMOVE BUTTON */
-    const removeBtn = e.target.closest('.remove-btn');
-    if (removeBtn) {
-      removeMovie(parseInt(removeBtn.dataset.movieId));
+    /* ARCHIVE / UNARCHIVE BUTTONS */
+    const archiveBtn = e.target.closest('.archive-btn');
+    if (archiveBtn) {
+      archiveMovie(parseInt(archiveBtn.dataset.movieId), true);
+      return;
+    }
+    const unarchiveBtn = e.target.closest('.unarchive-btn');
+    if (unarchiveBtn) {
+      archiveMovie(parseInt(unarchiveBtn.dataset.movieId), false);
       return;
     }
 
@@ -3398,10 +3470,7 @@ function renderShelfMovieList () {
       refreshShelfSelectAllLabel();
       return;
     }
-    ml.innerHTML = '';
-    filtered.forEach((m, i) => {
-      ml.appendChild(renderShelfEntry(m, i + 1, null, null));
-    });
+    renderShelfRows(ml, filtered.map(m => ({ movie: m, listId: null, entry: null })));
     refreshShelfSelectAllLabel();
     return;
   }
@@ -3423,10 +3492,7 @@ function renderShelfMovieList () {
       refreshShelfSelectAllLabel();
       return;
     }
-    ml.innerHTML = '';
-    myMovies.forEach((m, i) => {
-      ml.appendChild(renderShelfEntry(m, i + 1, null, null));
-    });
+    renderShelfRows(ml, myMovies.map(m => ({ movie: m, listId: null, entry: null })));
     refreshShelfSelectAllLabel();
     return;
   }
@@ -3446,11 +3512,49 @@ function renderShelfMovieList () {
     return;
   }
 
-  ml.innerHTML = '';
-  onList.forEach((row, i) => {
-    ml.appendChild(renderShelfEntry(row.movie, i + 1, listId, row.entry));
-  });
+  renderShelfRows(ml, onList.map(row => ({ movie: row.movie, listId: listId, entry: row.entry })));
   refreshShelfSelectAllLabel();
+}
+
+/* Split shelf items into active + archived, render active 1..N, then a gray
+   "Archived" section below. An item is archived per its list entry (list-tab)
+   or per the aggregated group flag (all / my-shelf tabs). */
+function renderShelfRows (ml, items) {
+  const isArch = it => it.entry ? it.entry.archived : it.movie.archived;
+  const active   = items.filter(it => !isArch(it));
+  const archived = items.filter(it =>  isArch(it));
+
+  ml.innerHTML = '';
+  active.forEach((it, i) => {
+    ml.appendChild(renderShelfEntry(it.movie, i + 1, it.listId, it.entry, false));
+  });
+  if (archived.length) {
+    const divider = document.createElement('div');
+    divider.className = 'archive-divider';
+    divider.innerHTML = '<span>Archived</span>';
+    ml.appendChild(divider);
+    archived.forEach(it => {
+      ml.appendChild(renderShelfEntry(it.movie, null, it.listId, it.entry, true));
+    });
+  }
+}
+
+/* Compact "added / archived" summary shown in an archived row's note cell and
+   in the note modal. Dates render short; missing data shows an en-dash. */
+function fmtShelfDate (iso) {
+  if (!iso) return '–';
+  try {
+    return new Date(iso).toLocaleDateString(undefined,
+      { year: 'numeric', month: 'short', day: 'numeric' });
+  } catch (e) { return '–'; }
+}
+function shelfArchiveInfoHtml (movie) {
+  return '<div class="shelf-archive-info">'
+    + '<div><span class="ai-label">Added</span> ' + fmtShelfDate(movie.added_at)
+    +   ' <span class="ai-by">by ' + escapeHtml(movie.added_by_name || 'someone') + '</span></div>'
+    + '<div><span class="ai-label">Archived</span> ' + fmtShelfDate(movie.archived_at)
+    +   ' <span class="ai-by">by ' + escapeHtml(movie.archived_by_name || 'someone') + '</span></div>'
+    + '</div>';
 }
 
 /* `listEntry` is the per-list `{list_id, movie_id, added_here}` row when
@@ -3460,9 +3564,9 @@ function renderShelfMovieList () {
      rank  grab  poster  title  note  checkbox  X
    The note is a textarea bound to (visitor, tmdb_id, media_type) — saved on
    blur via PUT /visitor/:id/note. Visible only to this visitor. */
-function renderShelfEntry (movie, position, listId, listEntry) {
+function renderShelfEntry (movie, position, listId, listEntry, isArchived) {
   const entry = document.createElement('div');
-  entry.className = 'entry shelf-entry';
+  entry.className = 'entry shelf-entry' + (isArchived ? ' entry-archived' : '');
   entry.dataset.tmdbId    = movie.tmdb_id;
   entry.dataset.mediaType = movie.media_type;
   if (listEntry) entry.dataset.movieId = listEntry.movie_id;       // list-tab drag commits by movie_id
@@ -3474,29 +3578,49 @@ function renderShelfEntry (movie, position, listId, listEntry) {
   const posterUrl = movie.poster ? TMDB_IMG + 'w92' + movie.poster : '';
   const yearText  = (movie.year != null) ? movie.year : '';
 
-  /* X-to-remove. On list-tabs only entries the visitor added show one.
-     On the all / my-shelf tab the X opens a multi-list confirm popup. */
-  let removeHtml = '';
+  /* Archive / unarchive button (replaces the old ✕). Free-for-all. On a
+     list-tab it acts on that list's row; on all / my-shelf it acts on the
+     movie key across all the visitor's lists. */
+  let btnHtml = '';
+  const verb = isArchived ? 'unarchive' : 'archive';
+  const icon = isArchived ? UNARCHIVE_ICON : ARCHIVE_ICON;
+  const cap  = isArchived ? 'Unarchive' : 'Archive';
   if (listEntry) {
-    if (listEntry.added_here) {
-      removeHtml = '<button class="remove-btn" data-movie-id="' + listEntry.movie_id
-        + '" data-list-id="' + escapeHtml(listId) + '">✕</button>';
-    }
-  } else if (movie.added_by_me) {
-    removeHtml = '<button class="remove-btn shelf-multi-x" '
-      + 'data-tmdb-id="' + movie.tmdb_id
-      + '" data-media-type="' + escapeHtml(movie.media_type) + '">✕</button>';
+    btnHtml = '<button class="shelf-' + verb + '-btn" data-movie-id="' + listEntry.movie_id
+      + '" data-list-id="' + escapeHtml(listId) + '" aria-label="' + cap + '" title="' + cap
+      + '">' + icon + '</button>';
+  } else {
+    btnHtml = '<button class="shelf-' + verb + '-key-btn" data-tmdb-id="' + movie.tmdb_id
+      + '" data-media-type="' + escapeHtml(movie.media_type) + '" aria-label="' + cap
+      + '" title="' + cap + '">' + icon + '</button>';
   }
+
+  /* Note cell. Active rows: the editable note box. Archived rows: the archive
+     summary above the (still editable) note box. */
+  const noteBox =
+    '<div class="shelf-note-box' + (movie.note ? '' : ' shelf-note-empty') + '" '
+    +   'data-tmdb-id="' + movie.tmdb_id + '" '
+    +   'data-media-type="' + escapeHtml(movie.media_type) + '">'
+    + (movie.note ? escapeHtml(movie.note) : 'note:')
+    + '</div>';
+  const noteCell = isArchived
+    ? '<div class="entry-comments shelf-archived-cell">' + shelfArchiveInfoHtml(movie) + noteBox + '</div>'
+    : '<div class="entry-comments">' + noteBox + '</div>';
+
+  const rankStr = isArchived ? '–' : String(position);
+  const grabCell = isArchived
+    ? '<div class="entry-grab"></div>'
+    : '<div class="entry-grab">'
+        + '<div class="grab-handle" aria-label="Drag to reorder">'
+          + '<span class="grab-icon">&#9776;</span>'
+        + '</div>'
+      + '</div>';
 
   entry.innerHTML =
     '<div class="entry-rank">'
-      + '<span class="rank-number">' + position + '</span>'
+      + '<span class="rank-number">' + escapeHtml(rankStr) + '</span>'
     + '</div>'
-    + '<div class="entry-grab">'
-      + '<div class="grab-handle" aria-label="Drag to reorder">'
-        + '<span class="grab-icon">&#9776;</span>'
-      + '</div>'
-    + '</div>'
+    + grabCell
     + '<div class="entry-poster" data-tmdb-id="' + movie.tmdb_id
       + '" data-media-type="' + escapeHtml(movie.media_type) + '">'
       + (posterUrl ? '<img src="' + posterUrl + '">' : '<div class="no-poster">?</div>')
@@ -3507,18 +3631,12 @@ function renderShelfEntry (movie, position, listId, listEntry) {
         + escapeHtml(movie.title) + (yearText !== '' ? ' (' + yearText + ')' : '')
       + '</div>'
     + '</div>'
-    + '<div class="entry-comments">'                  /* doubles as note column slot */
-      + '<div class="shelf-note-box' + (movie.note ? '' : ' shelf-note-empty') + '" '
-      +     'data-tmdb-id="' + movie.tmdb_id + '" '
-      +     'data-media-type="' + escapeHtml(movie.media_type) + '">'
-      +   (movie.note ? escapeHtml(movie.note) : 'note:')
-      + '</div>'
-    + '</div>'
+    + noteCell
     + '<div class="shelf-checkbox-cell">'
       + '<input type="checkbox" class="shelf-cb" data-shelf-key="' + escapeHtml(key) + '"'
       + (checked ? ' checked' : '') + '>'
     + '</div>'
-    + '<div class="entry-remove">' + removeHtml + '</div>';
+    + '<div class="entry-remove">' + btnHtml + '</div>';
   return entry;
 }
 
@@ -3635,10 +3753,15 @@ function expandShelfNote (tmdbId, mediaType) {
     mm.tmdb_id === tmdbId && mm.media_type === mediaType);
   const existing = m ? (m.note || '') : '';
 
+  /* For an archived movie the modal also shows the read-only archive summary
+     below the note input — this is where the dense info lives on mobile. */
+  const infoHtml = (m && m.archived) ? shelfArchiveInfoHtml(m) : '';
+
   box.innerHTML =
       '<strong>Note:</strong>'
     + '<textarea class="comment-edit shelf-note-edit">' + escapeHtml(existing) + '</textarea>'
-    + '<button class="comment-done-btn">Done</button>';
+    + '<button class="comment-done-btn">Done</button>'
+    + infoHtml;
 
   const ta = box.querySelector('.shelf-note-edit');
   ta.focus();
@@ -3688,11 +3811,23 @@ async function commitShelfListReorder (listId, orderedMovieIds) {
   await loadShelf();
 }
 
-async function shelfRemoveFromList (listId, movieId) {
-  await fetch(API + '/list/' + listId + '/movies/' + movieId, {
-    method: 'DELETE',
+/* Archive / unarchive one list's row (shelf list-tab). */
+async function shelfArchiveList (listId, movieId, archived) {
+  await fetch(API + '/list/' + listId + '/archive', {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ visitor_id: visitorId })
+    body: JSON.stringify({ visitor_id: visitorId, movie_id: movieId, archived: archived })
+  });
+  await loadShelf();
+}
+
+/* Archive / unarchive a movie key across all the visitor's lists (shelf
+   all / my-shelf tabs). */
+async function shelfArchiveKey (tmdbId, mediaType, archived) {
+  await fetch(API + '/visitor/' + visitorId + '/archive', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tmdb_id: tmdbId, media_type: mediaType, archived: archived })
   });
   await loadShelf();
 }
@@ -3835,13 +3970,17 @@ function setupShelfEventListeners () {
       return;
     }
 
-    /* X-to-remove on a list-tab entry. The button only renders when the
-       visitor was the adder on this list, so the server-side check is
-       a redundant safety net. */
-    const remove = e.target.closest('.remove-btn[data-list-id]');
-    if (remove) {
+    /* Archive / unarchive on a list-tab entry (free-for-all). */
+    const archL = e.target.closest('.shelf-archive-btn');
+    if (archL) {
       e.stopPropagation();
-      shelfRemoveFromList(remove.dataset.listId, parseInt(remove.dataset.movieId));
+      shelfArchiveList(archL.dataset.listId, parseInt(archL.dataset.movieId), true);
+      return;
+    }
+    const unarchL = e.target.closest('.shelf-unarchive-btn');
+    if (unarchL) {
+      e.stopPropagation();
+      shelfArchiveList(unarchL.dataset.listId, parseInt(unarchL.dataset.movieId), false);
       return;
     }
 
@@ -3892,12 +4031,19 @@ function setupShelfEventListeners () {
       return;
     }
 
-    /* User-tab X (multi-list confirm). The data-tmdb-id signature is the
-       discriminator that splits this from the per-list X above. */
-    const multiX = e.target.closest('.remove-btn.shelf-multi-x');
-    if (multiX) {
+    /* All / My-Shelf archive + unarchive — acts on the movie key across every
+       list this visitor is on. The data-tmdb-id signature splits these from
+       the per-list buttons above. */
+    const archK = e.target.closest('.shelf-archive-key-btn');
+    if (archK) {
       e.stopPropagation();
-      openShelfMultiRemove(parseInt(multiX.dataset.tmdbId), multiX.dataset.mediaType);
+      shelfArchiveKey(parseInt(archK.dataset.tmdbId), archK.dataset.mediaType, true);
+      return;
+    }
+    const unarchK = e.target.closest('.shelf-unarchive-key-btn');
+    if (unarchK) {
+      e.stopPropagation();
+      shelfArchiveKey(parseInt(unarchK.dataset.tmdbId), unarchK.dataset.mediaType, false);
       return;
     }
 

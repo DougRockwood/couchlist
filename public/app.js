@@ -2125,8 +2125,6 @@ async function openShareModal () {
 
   const origin = window.location.origin;
   const inviteUrl = origin + '/?ListId=' + encodeURIComponent(listId);
-  const privateUrl = origin + '/?ListId=' + encodeURIComponent(listId)
-    + '&UserId=' + encodeURIComponent(visitorId);
 
   const modal = document.getElementById('copy-paste-modal');
   modal.innerHTML =
@@ -2137,13 +2135,6 @@ async function openShareModal () {
     + 'Opening it joins them automatically.</p>'
     + '<input class="share-link" readonly value="' + escapeHtml(inviteUrl) + '">'
     + '<button class="share-copy-btn" data-share-target="invite">Copy invite link</button>'
-
-    + '<h3 class="share-h3-2">Your private link</h3>'
-    + '<p class="share-hint">Save this for yourself — it logs you back in '
-    + 'as <strong>' + escapeHtml((visitor && visitor.name) || 'you') + '</strong> '
-    + 'in incognito or a different browser. Don\'t share it with anyone.</p>'
-    + '<input class="share-link" readonly value="' + escapeHtml(privateUrl) + '">'
-    + '<button class="share-copy-btn" data-share-target="private">Copy private link</button>'
     + '</div>';
 
   modal.style.display = 'block';
@@ -2154,12 +2145,10 @@ async function openShareModal () {
   });
   modal.querySelectorAll('.share-copy-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const target = btn.dataset.shareTarget;
-      const url = (target === 'invite') ? inviteUrl : privateUrl;
-      copyToClipboard(url);
+      copyToClipboard(inviteUrl);
       btn.textContent = 'Copied!';
       setTimeout(() => {
-        btn.textContent = (target === 'invite') ? 'Copy invite link' : 'Copy private link';
+        btn.textContent = 'Copy invite link';
       }, 1200);
     });
   });
@@ -2870,9 +2859,8 @@ function openHowToModal() {
     return;
   }
 
-  /* Personal login URL — same `?ListId=…&UserId=…` form as the share
-     modal's "private link". Falls back to placeholders when the visitor
-     hasn't materialized yet. */
+  /* Personal login URL ("your private link") — `?ListId=…&UserId=…` form.
+     Falls back to placeholders when the visitor hasn't materialized yet. */
   const safeListId = listId ? encodeURIComponent(listId) : 'XXXXXXXX';
   const safeUserId = visitorId ? encodeURIComponent(visitorId) : 'YOURID';
   const loginUrl = window.location.origin
@@ -2907,8 +2895,8 @@ function openHowToModal() {
     + 'a plain-text string; anyone who has it is that user. Don\'t put '
     + 'anything sensitive here.</p>'
 
-    + '<p class="howto-newlist">Your user ID is stored in a cookie. This link '
-    + 'sets it without the cookie:<br>'
+    + '<p class="howto-newlist">Your private link — logs you back in as you '
+    + 'in incognito or a different browser. Keep it to yourself:<br>'
     + '<strong>' + escapeHtml(loginUrl) + '</strong></p>'
 
     + '</div>';

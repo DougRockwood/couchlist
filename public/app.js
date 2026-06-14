@@ -83,6 +83,7 @@ let activeTab         = 'couch';
 let selectedVisitors  = {};
 let searchResults     = [];
 let expandedComment   = null;
+let pendingDeepLink   = null;   // {movieId, visitorId} from ?Movie&?Comment — fire once after first render
 let movieDetailCache  = {};
 let displayNames      = {};
 
@@ -161,6 +162,8 @@ function initApp() {
   const listIdParam = params.get('ListId');
   const shelfParam  = params.get('Shelf');
   const newParam    = params.get('New');
+  const movieParam   = params.get('Movie');     // deep-link: which movie row
+  const commentParam = params.get('Comment');   // deep-link: whose comment to pop open
 
   const urlPath = window.location.pathname.replace(/^\//, '');
   const pathListId =
@@ -180,13 +183,24 @@ function initApp() {
     }
   }
 
-  /* Strip UserId / New from the URL after consuming. Keep ListId/Shelf if
-     present. New is a one-shot trigger — once we've decided to skip the
-     last_list_id resolve below, we don't want a reload to repeat it. */
-  if (userIdParam || newParam) {
+  /* Deep link to a specific comment: ?Movie=<id>&Comment=<visitorId>. Stash
+     it; fired once after the first render (see the loadList .then below). */
+  if (movieParam && /^\d+$/.test(movieParam)
+      && commentParam && /^[A-Za-z0-9]{10}$/.test(commentParam)) {
+    pendingDeepLink = { movieId: parseInt(movieParam, 10), visitorId: commentParam };
+  }
+
+  /* Strip UserId / New / Movie / Comment from the URL after consuming. Keep
+     ListId/Shelf if present. New is a one-shot trigger — once we've decided to
+     skip the last_list_id resolve below, we don't want a reload to repeat it.
+     Movie/Comment likewise fire once, so they don't linger in the address bar
+     or re-pop the modal on reload. */
+  if (userIdParam || newParam || pendingDeepLink) {
     const clean = new URLSearchParams(params);
     clean.delete('UserId');
     clean.delete('New');
+    clean.delete('Movie');
+    clean.delete('Comment');
     const qs = clean.toString();
     history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : ''));
   }
@@ -227,6 +241,12 @@ function initApp() {
   }).then(() => {
     setupEventListeners();
     document.title = 'CouchList';
+
+    /* Deep-link arrival: scroll to the row and pop its comment modal, once. */
+    if (pendingDeepLink) {
+      openDeepLinkComment(pendingDeepLink.movieId, pendingDeepLink.visitorId);
+      pendingDeepLink = null;
+    }
 
     /* pendingPaste hook: if a previous Apply redirected us here, run the
        blob now that we're on the right list/visitor. */
@@ -1433,6 +1453,38 @@ async function commitReorder(orderedMovieIds) {
 
 let commentUnbindWidth = null;
 
+/* Deep-link entry point: find the target row, bring it into view behind the
+   backdrop, then open its comment modal. No-op if the row/comment isn't on
+   this list (e.g. deleted since the link was made). */
+function openDeepLinkComment(movieId, commentVisitorId) {
+  const box = document.querySelector(
+    '.comment-box[data-movie-id="' + movieId + '"]'
+    + '[data-visitor-id="' + commentVisitorId + '"]'
+  );
+  if (!box) return;
+  box.scrollIntoView({ block: 'center' });
+  expandComment(movieId, commentVisitorId);
+}
+
+/* Small blue "🔗 link" button for the expanded comment modal. Copies a deep
+   link that reopens this exact comment. Host-relative, so it points at
+   whatever domain you're on (test vs prod). */
+function makeCommentLinkBtn(movieId, commentVisitorId) {
+  const btn = document.createElement('button');
+  btn.className = 'comment-link-btn';
+  btn.innerHTML = '🔗 link';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const url = window.location.origin + '/?ListId=' + listId
+      + '&Movie=' + movieId + '&Comment=' + commentVisitorId;
+    navigator.clipboard.writeText(url).then(() => {
+      btn.textContent = '✓ copied';
+      setTimeout(() => { btn.innerHTML = '🔗 link'; }, 1500);
+    });
+  });
+  return btn;
+}
+
 function expandComment(movieId, commentVisitorId) {
   expandedComment = { movieId: movieId, visitorId: commentVisitorId };
 
@@ -1489,6 +1541,9 @@ function expandComment(movieId, commentVisitorId) {
   xBtn.textContent = '✕';
   xBtn.addEventListener('click', (e) => { e.stopPropagation(); collapseComment(); });
   box.appendChild(xBtn);
+
+  /* Copy-deep-link button — bottom-left of the modal, every comment gets one. */
+  box.appendChild(makeCommentLinkBtn(movieId, commentVisitorId));
 }
 
 function collapseComment() {

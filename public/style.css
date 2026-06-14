@@ -1504,6 +1504,20 @@ html, body {
   overflow-y: auto;
 }
 
+/* Copy-deep-link button inside the expanded comment modal. Bottom-left,
+   mirrors .modal-close (top-right). Blue so it reads as a link. */
+.comment-link-btn {
+  position: absolute;
+  left: 14px;
+  bottom: 10px;
+  background: none;
+  border: none;
+  color: #2b6cff;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+}
+
 
 /* ============================================================================
    SECTION 10: MOVIE INFO POPUP

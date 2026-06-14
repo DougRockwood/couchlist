@@ -686,7 +686,7 @@ html, body {
      using minmax(0, Nfr) — ratios preserved, no min-content bleed. */
   grid-template-columns:
     minmax(0, 7.5fr) minmax(0, 7.5fr) var(--poster-width, 60px)
-    minmax(0, 30fr)  minmax(0, 37.5fr) minmax(0, 7.5fr);
+    minmax(0, 30fr)  minmax(0, 36fr) minmax(0, 9fr);
 }
 
 /* Shelf mode (My Shelf page) uses a 7-column grid:
@@ -706,7 +706,7 @@ html, body {
   #movie-list {
     grid-template-columns:
       minmax(0, 2fr) minmax(0, 2fr) var(--poster-width, 60px)
-      minmax(0, 30fr) minmax(0, 61fr) minmax(0, 2fr);
+      minmax(0, 30fr) minmax(0, 60fr) minmax(0, 3fr);
   }
   /* Shelf mode in landscape: collapse rank/grab/poster/check/X gutters and
      give the freed width to the note column — same shape as the couchlist
@@ -987,9 +987,19 @@ html, body {
   border: none;
   color: #888;
   cursor: pointer;
-  padding: 3px;
+  padding: 2px;
   line-height: 0;
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;                         /* fill the column so the icon centers */
+}
+/* Sized to fill the column, roughly matching the Help button. */
+.archive-btn svg, .unarchive-btn svg,
+.shelf-archive-btn svg, .shelf-unarchive-btn svg,
+.shelf-archive-key-btn svg, .shelf-unarchive-key-btn svg {
+  width: 26px;
+  height: 26px;
 }
 .archive-btn:hover, .shelf-archive-btn:hover, .shelf-archive-key-btn:hover { color: #c0392b; }
 .unarchive-btn:hover, .shelf-unarchive-btn:hover, .shelf-unarchive-key-btn:hover { color: #2a9d3f; }

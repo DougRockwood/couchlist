@@ -852,9 +852,9 @@ function renderList() {
      Title clamp = N lines: now that the adder badge is gone the title
      can use the full row height instead of leaving the bottom row free. */
   const N        = Math.max(1, Object.keys(listData.visitors).length);
-  const pillH    = 19;
-  const pillGap  = 2;
-  const entryPad = 16;
+  const pillH    = 15;                                              // 11px/1.15 line + 1px border ×2, snug
+  const pillGap  = 1;
+  const entryPad = 8;                                               // matches .entry padding 4px top+bottom
   const rowH     = N * pillH + (N - 1) * pillGap + entryPad;
   const posterW  = Math.round(rowH * 92 / 138);
   container.style.setProperty('--row-height',  rowH + 'px');

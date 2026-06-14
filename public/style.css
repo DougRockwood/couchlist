@@ -55,7 +55,7 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 16px;
   line-height: 1.4;
-  background: #ffffff;
+  background: #d9dce3;
   color: #222;
   -webkit-tap-highlight-color: transparent;
   /* Belt-and-suspenders: nothing in the layout should ever be wider than
@@ -97,7 +97,7 @@ html, body {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: #ffffff;
+  background: #dde0e6;
   width: 100%;
 }
 
@@ -109,7 +109,7 @@ html, body {
 
 #search-area {
   position: relative;
-  background: #ffffff;
+  background: #dde0e6;
   padding: 6px 6px 0;
 }
 
@@ -130,7 +130,7 @@ html, body {
   font-size: 16px;
   border: 1px solid #bbb;
   border-radius: 8px;
-  background: #ffffff;
+  background: #f4f5f8;
   color: #222;
   outline: none;
 }
@@ -729,14 +729,16 @@ html, body {
   grid-template-columns: subgrid;
   grid-column: 1 / -1;
   align-items: stretch;
-  padding: 8px 0;
+  padding: 4px 0;
   /* Row height is pinned to the computed --row-height so the layout is
      uniform across rows even when a row's comments stack is shorter than
      the sum of all pills (e.g. if a pill is collapsed during expand). */
   min-height: var(--row-height, auto);
-  border-bottom: 1px solid #ccc;
+  border: 1px solid #c8ced8;
+  border-radius: 8px;
+  margin-bottom: 6px;
   position: relative;
-  background: #ffffff;
+  background: #edeff3;
 }
 
 /* --- Column A / Column B: rank cells ---
@@ -912,9 +914,12 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
-  padding: 0 6px;
+  padding: 3px 6px;
+  background: #e6e9ef;
+  border: 1px solid #d6dae2;
+  border-radius: 6px;
 }
 
 /* Each row pairs the pill with its "(rank)" label to the right.
@@ -933,23 +938,30 @@ html, body {
 }
 
 .comment-rank {
-  font-size: 11px;
+  font-size: 10px;
   white-space: nowrap;
   flex: 0 0 auto;
 }
 
 .comment-box {
-  font-size: 12px;
-  line-height: 1.2;
-  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.15;
+  padding: 0 6px;
   background: #f7f7f7;
   border-radius: 4px;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   cursor: pointer;
   border: 1px solid #ccc;
+}
+
+/* Collapsed comment chips clamp to a single ellipsized line so a runaway
+   comment can't blow out the row height. The expanded/modal state
+   (.comment-expanded) is exempt and keeps its own white-space:normal. */
+.comment-box:not(.comment-expanded) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 /* --- Column F: remove X (or empty placeholder) --- */
@@ -1024,10 +1036,11 @@ html, body {
 }
 
 /* Archived rows: light gray background, dimmed content. */
-.entry-archived { background: #f1f1f1; color: #888; }
+.entry-archived { background: #ccd0d8; border-color: #b6bcc7; color: #888; }
 .entry-archived .rank-number { color: #aaa; }
 .entry-archived .entry-title-text { color: #777; }
 .entry-archived .entry-poster img { filter: grayscale(0.6); opacity: 0.85; }
+.entry-archived .entry-comments { background: #c6cbd4; border-color: #b3b9c4; }
 
 /* Shelf archive-info summary (note cell + note modal). */
 .shelf-archived-cell { display: flex; flex-direction: column; }

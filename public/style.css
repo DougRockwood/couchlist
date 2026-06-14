@@ -1427,6 +1427,8 @@ html, body {
   border-radius: 50%;
   border: 1px solid rgba(0,0,0,0.25);
   color: #fff;
+  font-size: 10px;       /* match live .tab-ready-btn, not the paragraph size */
+  font-weight: bold;
   letter-spacing: 0.3px;
   text-shadow: none;
   white-space: nowrap;

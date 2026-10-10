@@ -2262,6 +2262,6 @@ app.get('*', (req, res) => {
    SECTION 13: START THE SERVER
    ============================================================================ */
 
-app.listen(PORT, () => {
+app.listen(PORT, '127.0.0.1', () => {   // loopback only — nginx is the sole public door
   console.log('couchlist server running on http://localhost:' + PORT);
 });
